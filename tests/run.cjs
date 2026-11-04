@@ -24,7 +24,12 @@ test('Python reference rule IDs, reasons, review levels', () => {
   const cases = JSON.parse(fs.readFileSync(path.join(__dirname, 'reference_cases.json'), 'utf8'));
   const failures = [];
   for (const item of cases) {
-    const actual = normalize(context.checkSetcLocalRules(item.text).map(i => [i.ruleId, i.reason, i.reviewLevel]));
+    const reference = context.checkSetcReferenceRules_(item.text);
+    const combined = context.checkSetcLocalRules(item.text);
+    const actual = normalize(reference.map(i => [i.ruleId, i.reason, i.reviewLevel]));
+    assert.deepEqual(normalize(combined.slice(0, reference.length)), normalize(reference));
+    assert.ok(combined.slice(reference.length).every(i =>
+      ['SETC-JAMO-SEQUENCE-REVIEW', 'SETC-SINGLE-EOJEOL-REVIEW'].includes(i.ruleId) && i.reviewLevel === 'REVIEW'));
     try { assert.deepEqual(actual, item.expected); }
     catch { failures.push({text: item.text, expected: item.expected, actual}); }
   }
@@ -63,4 +68,5 @@ test('All prior unrelated functions remain byte-equivalent after newline normali
 });
 
 require('./sheets.cjs')({source, test, assert, normalize});
+require('./additional-rules.cjs')({context, test, assert, normalize});
 console.log('Passed', passed, 'test groups');

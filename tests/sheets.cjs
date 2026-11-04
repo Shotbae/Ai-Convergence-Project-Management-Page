@@ -271,6 +271,30 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getLastRow(), 1);
   });
 
+  test('Additional review rules render G evidence and I reasons, then clear after correction', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    const text = '컨 텐 츠 제작 중 ㅁㄴ 오류를 점검함.';
+    s.getRange('G2').setValue(text); s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), text);
+    assert.equal(s.getRange('I2').getValue(), 'ㅁㄴ: 자모 연속 표기 오타 가능성(확인필요)\n컨 텐 츠: 한 글자 어절 연속 사용(확인필요)');
+    let rich = s.getRange('G2').getRichTextValue();
+    for (const phrase of ['컨 텐 츠', 'ㅁㄴ']) {
+      const start = text.indexOf(phrase);
+      assert.ok(rich.styles.slice(start, start + phrase.length).every(style => style.color === '#ff0000'));
+    }
+    assert.equal(rich.styles[text.indexOf('제작')].color, '#000000');
+    assert.equal(s.getRange('H2').getFormula(), '=GET_NEIS_BYTE(G2)');
+    s.getRange('G2').setValue('콘텐츠 제작 과정을 점검함.'); e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('I2').getValue(), '');
+    rich = s.getRange('G2').getRichTextValue();
+    assert.ok(rich.styles.every(style => style.color === '#000000'));
+    s.getRange('G3').setValue('한 번 더 검토함.');
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('G3').getValue(), '한 번 더 검토함.');
+    assert.equal(s.getRange('I3').getValue(), '한 번 더: 한 글자 어절 연속 사용(확인필요)');
+  });
+
   test('Menu retains existing entry points and modal has three generation modes', () => {
     const e = environment(); e.context.onOpen(); e.context.openCompletionModal();
     const names = e.menus[0].items.map(i => i.fn);

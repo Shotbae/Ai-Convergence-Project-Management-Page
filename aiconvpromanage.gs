@@ -1575,6 +1575,11 @@ function setcQuotedPeriods_(text) {
 }
 
 function checkSetcLocalRules(text) {
+  return checkSetcReferenceRules_(text).concat(checkSetcAdditionalRules_(text));
+}
+
+/** 원본 검증기와 동일한 판정을 유지하는 부분. 앱 추가 규칙은 별도 함수에서 합칩니다. */
+function checkSetcReferenceRules_(text) {
   if (typeof text !== 'string' || !text) return [];
   const data = SETC_RULE_DATA_, issues = [], namesCovered = [], moeCovered = [];
   const add = (ruleId, reason, spans, level) => {
@@ -1692,6 +1697,50 @@ function checkSetcLocalRules(text) {
     const wrong = lastSpace >= 0 && chars.length - lastSpace <= 12 ? chars.slice(lastSpace + 1).join('') : chars.slice(-6).join('');
     const trimmedEnd = sentenceOffset + setcStrip_(sentence, true).length;
     add('LOCAL-ENDING', '어미 오류', [setcSpan_(text, trimmedEnd - wrong.length, trimmedEnd)]);
+  });
+  return issues;
+}
+
+/** 교사가 확인할 추가 표기 후보. 정상 예시도 의도적으로 REVIEW에 포함합니다. */
+function checkSetcAdditionalRules_(text) {
+  if (typeof text !== 'string' || !text) return [];
+  const issues = [];
+  // 일반 키보드로 입력하는 독립 자모. 완성형 및 정상 NFD 음절은 대상이 아닙니다.
+  const jamoSpans = [...text.matchAll(/[ㄱ-ㅎㅏ-ㅣ]{2,}/gu)]
+    .map(m => setcSpan_(text, m.index, m.index + m[0].length));
+  if (jamoSpans.length) issues.push({
+    ruleId: 'SETC-JAMO-SEQUENCE-REVIEW',
+    reason: '자모 연속 표기 오타 가능성(확인필요)',
+    spans: jamoSpans,
+    reviewLevel: 'REVIEW'
+  });
+
+  const singleSpans = [], opening = new Set(['(', '"', "'", '“', '‘', '[', '{']);
+  const closing = new Set(['.', ',', '!', '?', ';', ':', ')', '"', "'", '”', '’', ']', '}']);
+  let run = [], previousEnd = 0;
+  const flush = () => {
+    if (run.length >= 3) singleSpans.push(setcSpan_(text, run[0].start, run[run.length - 1].end));
+    run = [];
+  };
+  setcMatches_({source: '[^\\s]+', flags: ''}, text).forEach(token => {
+    const gap = text.slice(previousEnd, token.index);
+    previousEnd = token.index + token[0].length;
+    if (/[\r\n\v\f\u0085\u2028\u2029]/u.test(gap)) flush();
+    let left = 0, right = token[0].length;
+    while (left < right && opening.has(token[0][left])) left++;
+    while (right > left && closing.has(token[0][right - 1])) right--;
+    if (!/^[가-힣]$/u.test(token[0].slice(left, right))) { flush(); return; }
+    // 따옴표/괄호 경계와 문장부호를 건너 서로 다른 구절을 한 묶음으로 만들지 않습니다.
+    if (left) flush();
+    run.push({start: token.index + left, end: token.index + right});
+    if (right < token[0].length) flush();
+  });
+  flush();
+  if (singleSpans.length) issues.push({
+    ruleId: 'SETC-SINGLE-EOJEOL-REVIEW',
+    reason: '한 글자 어절 연속 사용(확인필요)',
+    spans: singleSpans,
+    reviewLevel: 'REVIEW'
   });
   return issues;
 }
