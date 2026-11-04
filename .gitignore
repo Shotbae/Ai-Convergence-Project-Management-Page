@@ -1,2 +1,3 @@
 # Local conversation exports are reference material, not application source.
 ChatGPT-*.txt
+__pycache__/
