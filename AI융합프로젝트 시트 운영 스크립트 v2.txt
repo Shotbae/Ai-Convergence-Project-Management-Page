@@ -1,0 +1,788 @@
+/**
+ * =========================================================
+ * [신규 추가] 상단 메뉴 및 팝업창 연동 코드 (HTML 통합 버전)
+ * =========================================================
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('⚙️ 출석부 관리')
+    .addItem('🚀 작업 설정 열기', 'openAdminModal')
+    .addToUi();
+}
+
+function openAdminModal() {
+  const htmlString = `
+  <!DOCTYPE html>
+  <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; color: #333; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; font-size: 13px; font-weight: bold; margin-bottom: 8px; color: #000; }
+        select { 
+          width: 100%; padding: 8px; font-size: 14px; 
+          border: 1px solid #757575; border-radius: 4px; background-color: white;
+        }
+        .divider { border-top: 1px solid #e0e0e0; margin: 20px 0; }
+        .btn-container { display: flex; flex-direction: column; gap: 8px; }
+        
+        button {
+          padding: 10px; font-size: 13px; font-weight: bold; cursor: pointer;
+          border: 1px solid #dadce0; border-radius: 4px; background-color: #fff;
+          color: #1a73e8; transition: background-color 0.2s;
+        }
+        button:hover { background-color: #f8f9fa; }
+        .primary-btn { background-color: #1a73e8; color: white; border: none; }
+        .primary-btn:hover { background-color: #1557b0; }
+        
+        #loading { font-size: 12px; color: #d93025; display: none; margin-top: 10px; text-align: center;}
+      </style>
+    </head>
+    <body>
+      
+      <div class="form-group">
+        <label>기수 선택 (필수)</label>
+        <select id="termSelect" onchange="updateCourses()">
+          <option value="">기수를 불러오는 중...</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>강좌 선택 (강좌별 출석부용)</label>
+        <select id="courseSelect">
+          <option value="">기수를 먼저 선택하세요</option>
+        </select>
+      </div>
+      
+      <div class="divider"></div>
+
+      <div class="btn-container">
+        <button class="primary-btn" onclick="runTask('createSingle')">📄 강좌별 출석부 생성</button>
+        <button onclick="runTask('createAll')">📑 전체 출석부 일괄 생성</button>
+        <button onclick="runTask('dupList')">👥 중복 신청자 명단 생성</button>
+        <button onclick="runTask('waitList')">⏳ 대기자 명단 생성</button>
+        <button onclick="runTask('teacherList')">🏫 담임 배포 명단 생성</button>
+        <button onclick="runTask('pdf')">🖨️ 통합 출석부 pdf 출력</button>
+      </div>
+      
+      <div id="loading">작업을 실행 중입니다. 잠시만 기다려주세요...</div>
+
+      <script>
+        window.onload = function() {
+          google.script.run.withSuccessHandler(function(terms) {
+            const termSelect = document.getElementById('termSelect');
+            termSelect.innerHTML = '<option value="">-- 기수 선택 --</option>';
+            terms.forEach(t => { termSelect.innerHTML += '<option value="' + t + '">' + t + '</option>'; });
+          }).getTermListFromSheets();
+        };
+
+        function updateCourses() {
+          const term = document.getElementById('termSelect').value;
+          const courseSelect = document.getElementById('courseSelect');
+          courseSelect.innerHTML = '<option value="">불러오는 중...</option>';
+
+          if(!term) {
+            courseSelect.innerHTML = '<option value="">기수를 먼저 선택하세요</option>';
+            return;
+          }
+
+          google.script.run.withSuccessHandler(function(courses) {
+            courseSelect.innerHTML = '<option value="">-- 강좌 선택 (선택 안함) --</option>';
+            courses.forEach(c => { courseSelect.innerHTML += '<option value="' + c + '">' + c + '</option>'; });
+          }).getCourseListFromSheet(term);
+        }
+
+        function runTask(taskType) {
+          const term = document.getElementById('termSelect').value;
+          const course = document.getElementById('courseSelect').value;
+
+          if(!term) { alert('먼저 기수를 선택해주세요!'); return; }
+          if(taskType === 'createSingle' && !course) { alert('강좌별 출석부를 생성하려면 강좌를 선택해주세요!'); return; }
+
+          document.querySelectorAll('button').forEach(b => b.disabled = true);
+          document.getElementById('loading').style.display = 'block';
+
+          google.script.run
+            .withSuccessHandler(function() { google.script.host.close(); })
+            .withFailureHandler(function(error) {
+              alert('오류가 발생했습니다: ' + error.message);
+              google.script.host.close();
+            })
+            .executeTaskFromModal(taskType, term, course);
+        }
+      </script>
+    </body>
+  </html>
+  `;
+
+  const html = HtmlService.createHtmlOutput(htmlString)
+      .setWidth(400)
+      .setHeight(600) // 세로 길이를 450에서 600으로 늘려 스크롤바를 없앴습니다!
+      .setTitle('출석부 및 명단 관리');
+  SpreadsheetApp.getUi().showModalDialog(html, '작업 설정');
+}
+
+// [팝업창 통신용] 1. 기수 목록 가져오기
+function getTermListFromSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let terms = [];
+  ss.getSheets().forEach(sheet => {
+    const name = sheet.getName();
+    if (name.includes("신청현황원본")) {
+      const term = name.replace("신청현황원본", "").trim();
+      if (term) terms.push(term);
+    }
+  });
+  return [...new Set(terms)].sort();
+}
+
+// [팝업창 통신용] 2. 선택한 기수의 강좌 목록 가져오기
+function getCourseListFromSheet(term) {
+  if (!term) return [];
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let termStr = String(term).trim();
+  if (!termStr.includes("기")) termStr += "기";
+  
+  const dataSheet = ss.getSheetByName(termStr + "신청현황원본");
+  if (!dataSheet) return [];
+
+  const headers = dataSheet.getRange(1, 7, 1, dataSheet.getLastColumn() - 6).getValues()[0];
+  return headers.filter(h => h && h.includes("_"));
+}
+
+// [팝업창 통신용] 3. 팝업창에서 넘어온 명령 실행기
+function executeTaskFromModal(taskType, term, course) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  
+  mainSheet.getRange("B3").clearDataValidations();
+  mainSheet.getRange("B4").clearDataValidations();
+  
+  if (term) mainSheet.getRange("B3").setValue(term);
+  if (course) mainSheet.getRange("B4").setValue(course);
+  
+  SpreadsheetApp.flush(); 
+
+  if (taskType === 'createSingle') createAttendanceSheet(true);
+  else if (taskType === 'createAll') createAllAttendanceSheets();
+  else if (taskType === 'dupList') createDuplicateList();
+  else if (taskType === 'waitList') createWaitingList();
+  else if (taskType === 'teacherList') createTeacherList();
+  else if (taskType === 'pdf') exportAttendancePDF();
+}
+
+
+/**
+ * =========================================================
+ * [공통 헬퍼 함수 모음] 
+ * =========================================================
+ */
+function getActiveDataSheet(ss, mainSheet, showAlert = true) {
+  const ui = SpreadsheetApp.getUi();
+  let termValue = mainSheet.getRange("B3").getValue();
+  
+  if (!termValue) {
+    if (showAlert) ui.alert("B3 셀에 기수(예: 1기)를 입력하거나 선택하세요.");
+    return null;
+  }
+  
+  let term = String(termValue).trim();
+  if (!term.includes("기")) term += "기";
+  
+  const sheetName = term + "신청현황원본";
+  const dataSheet = ss.getSheetByName(sheetName);
+  
+  if (!dataSheet) {
+    if (showAlert) ui.alert(`[${sheetName}] 시트를 찾을 수 없습니다. 시트 이름을 확인하세요.`);
+    return null;
+  }
+  return dataSheet;
+}
+
+function sortStudents(a, b) {
+  const t1 = new Date(a.time).getTime();
+  const t2 = new Date(b.time).getTime();
+  if (t1 !== t2) return t1 - t2;
+  const hashA = (a.id * 997) % 1000;
+  const hashB = (b.id * 997) % 1000;
+  return hashA - hashB;
+}
+
+function getNormalizedName(name) {
+  return String(name).replace(/[\d\s\(\)\[\]\-\_\,\.\&]+/g, "");
+}
+
+function getCourseInfoMap(ss) {
+  const infoSheet = ss.getSheetByName("강좌기본정보");
+  if (!infoSheet) return {};
+  const data = infoSheet.getRange(2, 1, infoSheet.getLastRow() - 1, 5).getValues();
+  let map = {};
+  data.forEach(r => {
+    const code = String(r[0]).trim();
+    if (code) {
+      const summary = String(r[1]).trim();
+      map[code] = {
+        summary: summary,
+        pureSummary: getNormalizedName(summary),
+        capacity: parseInt(r[4]) || 12
+      };
+    }
+  });
+  return map;
+}
+
+function getStudentDuplicates(row, headers, infoMap) {
+  let applied = [];
+  headers.forEach((h, i) => {
+    if(h && h.includes("_") && row[i] == 1){
+      const hCode = h.split("_")[0];
+      const hDates = h.split("_")[1].split("/")[0].split("&");
+      const cName = h.split("_")[1].split("/")[1];
+      const pureName = infoMap[hCode] ? infoMap[hCode].pureSummary : getNormalizedName(cName);
+      applied.push({ cName, pureName, dates: hDates });
+    }
+  });
+
+  let dateCounts = {};
+  applied.forEach(app => { app.dates.forEach(d => { dateCounts[d] = (dateCounts[d] || 0) + 1; }); });
+  
+  let nameCounts = {};
+  applied.forEach(app => { nameCounts[app.pureName] = (nameCounts[app.pureName] || 0) + 1; });
+
+  let dupMap = {};
+  let hasDateDup = false;
+  let hasNameDup = false;
+
+  applied.forEach(app => {
+    let isDateDup = app.dates.some(d => dateCounts[d] > 1);
+    let isNameDup = nameCounts[app.pureName] > 1;
+    
+    if (isDateDup) hasDateDup = true;
+    if (isNameDup) hasNameDup = true;
+
+    let reason = "";
+    if (isDateDup && isNameDup) reason = "(일자/강좌중복)";
+    else if (isDateDup) reason = "(일자중복)";
+    else if (isNameDup) reason = "(강좌중복)";
+    
+    if (reason) dupMap[app.cName] = reason;
+  });
+
+  let overallReason = "";
+  if (hasDateDup && hasNameDup) overallReason = "(일자/강좌중복)";
+  else if (hasDateDup) overallReason = "(일자중복)";
+  else if (hasNameDup) overallReason = "(강좌중복)";
+
+  return {
+    appliedCourses: applied.map(a => a.cName),
+    dupMap: dupMap,
+    overallReason: overallReason
+  };
+}
+
+
+/**
+ * =========================================================
+ * 1. 출석부 개별 생성 함수 
+ * =========================================================
+ */
+function createAttendanceSheet(showAlert=true){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  const mainSheet = ss.getSheetByName("출석부생성");
+  const dataSheet = getActiveDataSheet(ss, mainSheet, showAlert);
+  if (!dataSheet) return "error";
+
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) return "error";
+
+  const templateSheet = ss.getSheetByName("출석부템플릿");
+  const infoMap = getCourseInfoMap(ss);
+  const courseText = mainSheet.getRange("B4").getValue();
+
+  if(!courseText) return "error";
+
+  const courseCode = courseText.split("_")[0];
+  const headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+  const courseCol = headers.findIndex(h => h && h.split("_")[0] === courseCode);
+
+  if(courseCol === -1) return "error";
+
+  const capacity = infoMap[courseCode] ? infoMap[courseCode].capacity : 12;
+  const summary = infoMap[courseCode] ? infoMap[courseCode].summary : "강좌";
+
+  let termPrefix = String(mainSheet.getRange("B3").getValue()).trim();
+  if (!termPrefix.includes("기")) termPrefix += "기";
+  const sheetName = termPrefix + courseCode.split("-")[1] + summary;
+
+  if(ss.getSheetByName(sheetName)) return "skipped";
+
+  const sheet = templateSheet.copyTo(ss).setName(sheetName);
+  sheet.showSheet(); 
+
+  const data = dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).getValues();
+  const infoParts = courseText.split("_")[1].split("/");
+  const dateText = infoParts[0];
+  const courseName = infoParts[1];
+  const teacher = infoParts[2];
+  const dates = dateText.split("&");
+  
+  const currentPureName = infoMap[courseCode] ? infoMap[courseCode].pureSummary : getNormalizedName(courseName);
+  const headerDateInfo = headers.map(h => (h && h.includes("_")) ? h.split("_")[1].split("/")[0].split("&") : null);
+
+  let students = [];
+  data.forEach(row => {
+    if(row[courseCol] == 1) {
+      let appliedDates = [];
+      let appliedPureNames = [];
+      
+      headers.forEach((h, idx) => {
+        if(row[idx] == 1 && headerDateInfo[idx]) {
+          headerDateInfo[idx].forEach(d => { if(dates.includes(d)) appliedDates.push(d); });
+          const hCode = h.split("_")[0];
+          const pureName = infoMap[hCode] ? infoMap[hCode].pureSummary : getNormalizedName(h.split("_")[1].split("/")[1]);
+          appliedPureNames.push(pureName);
+        }
+      });
+      
+      const counts = {}; appliedDates.forEach(d => { counts[d] = (counts[d] || 0) + 1; });
+      const sameNameCount = appliedPureNames.filter(n => n === currentPureName).length;
+      
+      students.push({
+        id: row[1], 
+        name: row[2], 
+        time: row[5] ? row[5] : row[4], 
+        duplicate: Object.values(counts).some(c => c > 1) || sameNameCount > 1
+      });
+    }
+  });
+
+  students.sort(sortStudents);
+
+  const enrolled = students.slice(0, capacity).sort((a,b) => a.id - b.id);
+  const waiting = students.slice(capacity, capacity + 4).sort((a,b) => a.id - b.id);
+  const finalList = [...enrolled, ...waiting];
+
+  sheet.getRange("B3").setValue(courseName);
+  sheet.getRange("B4").setValue(dateText);
+  sheet.getRange("B5").setValue(teacher);
+  insertTeacherStamp(sheet, teacher);
+  sheet.getRange("D7").setValue(dates[0]);
+  sheet.getRange("E7").setValue(dates[1] || "");
+
+  let values = [], bgColors = [];
+  finalList.forEach((s, i) => {
+    let name = (i >= enrolled.length) ? s.name + "(대기)" : s.name;
+    if(s.duplicate) name += "(중복)";
+    values.push([i+1, s.id, name, "", "", ""]);
+    bgColors.push([null, null, s.duplicate ? "#fff59d" : null, null, null, null]);
+  });
+
+  if(values.length > 0) {
+    const range = sheet.getRange(8, 1, values.length, 6);
+    range.setValues(values);
+    range.setBackgrounds(bgColors);
+  }
+
+  if(values.length < 16) sheet.getRange(8 + values.length, 4, 16 - values.length, 2).removeCheckboxes();
+  if(dates.length == 1) sheet.getRange(8, 5, 16, 1).removeCheckboxes();
+
+  if(showAlert) { SpreadsheetApp.flush(); ss.setActiveSheet(sheet); ui.alert("출석부 생성 완료"); }
+  return "created";
+}
+
+
+/**
+ * =========================================================
+ * 2, 3, 4. 보조 함수 모음 
+ * =========================================================
+ */
+function createAllAttendanceSheets(){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  const dataSheet = getActiveDataSheet(ss, mainSheet, true);
+  if (!dataSheet) return;
+
+  const headers = dataSheet.getRange(1, 7, 1, dataSheet.getLastColumn() - 6).getValues()[0];
+  const courseList = headers.filter(h => h && h.includes("_")).sort((a,b) => {
+    return parseInt(a.split("_")[0].split("-")[1]) - parseInt(b.split("_")[0].split("-")[1]);
+  });
+
+  mainSheet.getRange("B4").clearDataValidations();
+
+  let createdCount = 0, skippedCount = 0;
+  courseList.forEach(course => {
+    mainSheet.getRange("B4").setValue(course);
+    const result = createAttendanceSheet(false); 
+    if (result === "created") createdCount++; else if (result === "skipped") skippedCount++;
+  });
+  
+  SpreadsheetApp.flush(); 
+
+  ui.alert(`전체 출석부 작업 완료!\n- 신규: ${createdCount}개\n- 건너뜀: ${skippedCount}개`);
+}
+
+function insertTeacherStamp(targetSheet, teacherName){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const stampSheet = ss.getSheetByName("교사직인");
+  if(!stampSheet) return;
+  const data = stampSheet.getRange("A:B").getValues();
+  for(let i=0; i<data.length; i++){
+    if(data[i][0] === teacherName){
+      stampSheet.getRange(i+1, 2).copyTo(targetSheet.getRange("E5"), {contentsOnly:true}); break;
+    }
+  }
+}
+
+function updateCourseDropdown(){ return; }
+
+
+/**
+ * =========================================================
+ * 5. 중복 신청자 명단 생성 함수 
+ * =========================================================
+ */
+function createDuplicateList(){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  const dataSheet = getActiveDataSheet(ss, mainSheet, true);
+  if (!dataSheet) return;
+
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const infoMap = getCourseInfoMap(ss);
+  const headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+  const data = dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).getValues();
+
+  let termPrefix = String(mainSheet.getRange("B3").getValue()).trim();
+  if (!termPrefix.includes("기")) termPrefix += "기";
+  const newSheetName = termPrefix + "_중복신청자명단";
+
+  const old = ss.getSheetByName(newSheetName);
+  if(old) ss.deleteSheet(old);
+  const sheet = ss.insertSheet(newSheetName);
+
+  let result = [];
+
+  data.forEach(row => {
+    const dupInfo = getStudentDuplicates(row, headers, infoMap);
+    
+    if (dupInfo.overallReason !== "") {
+      let mappedCourses = dupInfo.appliedCourses.map(cName => {
+        let reason = dupInfo.dupMap[cName];
+        return reason ? cName + reason : cName; 
+      });
+
+      result.push([
+        row[1], 
+        row[2] + dupInfo.overallReason,
+        mappedCourses[0]||"", 
+        mappedCourses[1]||"", 
+        mappedCourses[2]||""
+      ]);
+    }
+  });
+
+  result.sort((a,b) => a[0] - b[0]);
+  sheet.getRange("A1:E1").setValues([["학번", "이름(사유)", "신청강좌1", "신청강좌2", "신청강좌3"]]).setFontWeight("bold").setBackground("#e0e0e0").setHorizontalAlignment("center");
+  if(result.length > 0) {
+    sheet.getRange(2, 1, result.length, 5).setValues(result).setHorizontalAlignment("center");
+    sheet.autoResizeColumns(1, 5);
+  }
+  ss.setActiveSheet(sheet);
+}
+
+
+/**
+ * =========================================================
+ * 6. 대기자 명단 생성 함수 
+ * =========================================================
+ */
+function createWaitingList(){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  const dataSheet = getActiveDataSheet(ss, mainSheet, true);
+  if (!dataSheet) return;
+
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const infoMap = getCourseInfoMap(ss);
+  const headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+  const data = dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).getValues();
+
+  let termPrefix = String(mainSheet.getRange("B3").getValue()).trim();
+  if (!termPrefix.includes("기")) termPrefix += "기";
+  const newSheetName = termPrefix + "_대기자명단";
+
+  const old = ss.getSheetByName(newSheetName);
+  if(old) ss.deleteSheet(old);
+  const sheet = ss.insertSheet(newSheetName);
+
+  let map = {};
+
+  headers.forEach((h, idx) => {
+    if(h && h.includes("_")){
+      const code = h.split("_")[0];
+      const name = h.split("_")[1].split("/")[1];
+      let list = [];
+
+      data.forEach(row => { if(row[idx] == 1) list.push({id:row[1], name:row[2], time: row[5] ? row[5] : row[4]}); });
+      list.sort(sortStudents);
+
+      const cap = infoMap[code] ? infoMap[code].capacity : 12;
+      const wait = list.slice(cap, cap + 4);
+
+      wait.forEach(s => {
+        if(!map[s.id]) map[s.id] = {name: s.name, courses: []};
+        map[s.id].courses.push(name);
+      });
+    }
+  });
+
+  let result = [];
+  Object.keys(map).forEach(id => {
+    result.push([parseInt(id), map[id].name, map[id].courses[0]||"", map[id].courses[1]||"", map[id].courses[2]||""]);
+  });
+
+  result.sort((a,b) => a[0] - b[0]);
+  sheet.getRange("A1:E1").setValues([["학번", "이름", "대기강좌1", "대기강좌2", "대기강좌3"]]).setFontWeight("bold").setBackground("#e0e0e0").setHorizontalAlignment("center");
+  if(result.length > 0) sheet.getRange(2, 1, result.length, 5).setValues(result).setHorizontalAlignment("center");
+  ss.setActiveSheet(sheet);
+}
+
+
+/**
+ * =========================================================
+ * 7. 담임배포명단 생성 함수 
+ * =========================================================
+ */
+function createTeacherList(){
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  const dataSheet = getActiveDataSheet(ss, mainSheet, true);
+  if (!dataSheet) return;
+
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const infoMap = getCourseInfoMap(ss);
+  const headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+  const data = dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).getValues();
+
+  let termPrefix = String(mainSheet.getRange("B3").getValue()).trim();
+  if (!termPrefix.includes("기")) termPrefix += "기";
+  const newSheetName = termPrefix + "_담임배포명단";
+
+  const old = ss.getSheetByName(newSheetName);
+  if(old) ss.deleteSheet(old);
+  const sheet = ss.insertSheet(newSheetName);
+  
+  sheet.getRange("A1:E1").setValues([["학번","이름","신청강좌1","신청강좌2","신청강좌3"]])
+       .setFontWeight("bold").setBackground("#e0e0e0").setHorizontalAlignment("center");
+
+  let acceptedMap = {};
+  let waitingMap = {};
+  let globalDupMap = {}; 
+
+  data.forEach(row => {
+    const studentId = row[1];
+    globalDupMap[studentId] = getStudentDuplicates(row, headers, infoMap).dupMap;
+  });
+
+  headers.forEach((h, idx) => {
+    if(h && h.includes("_")){
+      const courseCode = h.split("_")[0];
+      const courseName = h.split("_")[1].split("/")[1];
+
+      let students = [];
+      data.forEach(row => {
+        if(row[idx] == 1) students.push({ id: row[1], time: row[5] ? row[5] : row[4] });
+      });
+
+      students.sort(sortStudents);
+      const cap = infoMap[courseCode] ? infoMap[courseCode].capacity : 12;
+      
+      students.slice(0, cap).forEach(s => {
+        if(!acceptedMap[s.id]) acceptedMap[s.id] = [];
+        acceptedMap[s.id].push(courseName);
+      });
+      students.slice(cap, cap + 4).forEach(s => {
+        if(!waitingMap[s.id]) waitingMap[s.id] = [];
+        waitingMap[s.id].push(courseName);
+      });
+    }
+  });
+
+  let resultValues = [];
+  let bgColors = [];
+
+  data.forEach(row => {
+    let courses = [];
+    let isWaitList = [];
+    let isDupList = []; 
+    
+    const studentId = row[1];
+    const studentName = row[2];
+    const myDupMap = globalDupMap[studentId] || {};
+    
+    headers.forEach((h, idx) => {
+      if(h && h.includes("_") && row[idx] == 1){
+        let cName = h.split("_")[1].split("/")[1];
+        let isAcc = (acceptedMap[studentId] && acceptedMap[studentId].includes(cName));
+        let isWait = (waitingMap[studentId] && waitingMap[studentId].includes(cName));
+
+        if(isAcc || isWait) {
+          let reason = myDupMap[cName] || "";
+          let displayCourse = cName;
+          
+          if (isWait) displayCourse += "(대기)";
+          if (reason) displayCourse += reason; 
+
+          courses.push(displayCourse);
+          isWaitList.push(isWait);
+          isDupList.push(reason !== ""); 
+        }
+      }
+    });
+
+    if (courses.length > 0) {
+      resultValues.push([studentId, studentName, courses[0]||"", courses[1]||"", courses[2]||""]);
+
+      let rowBgs = [null, null, null, null, null];
+      let hasAnyDup = isDupList.includes(true);
+      let hasAnyWait = isWaitList.includes(true);
+
+      if (hasAnyDup) {
+        rowBgs[0] = rowBgs[1] = "#ff0000";
+      } else if (hasAnyWait) {
+        rowBgs[0] = rowBgs[1] = "#fff59d";
+      }
+
+      for(let j = 0; j < 3; j++) {
+        if (isDupList[j]) {
+          rowBgs[j+2] = "#ff0000"; 
+        } else if (isWaitList[j]) {
+          rowBgs[j+2] = "#fff59d"; 
+        } else {
+          rowBgs[j+2] = null; 
+        }
+      }
+      bgColors.push(rowBgs);
+    }
+  });
+
+  if(resultValues.length > 0){
+    const combined = resultValues.map((val, i) => ({val, bg: bgColors[i]}));
+    combined.sort((a,b) => a.val[0] - b.val[0]);
+    
+    const sortedValues = combined.map(c => c.val);
+    const sortedBgs = combined.map(c => c.bg);
+
+    const range = sheet.getRange(2, 1, sortedValues.length, 5);
+    range.setValues(sortedValues);
+    range.setBackgrounds(sortedBgs); 
+    
+    const fontColors = sortedBgs.map(row => row.map(bg => bg === "#ff0000" ? "#ffffff" : "#000000"));
+    range.setFontColors(fontColors);
+    
+    range.setHorizontalAlignment("center").setBorder(true, true, true, true, true, true);
+    sheet.autoResizeColumns(1, 5);
+  }
+  ss.setActiveSheet(sheet);
+}
+
+
+/**
+ * =========================================================
+ * 8. 선택한 기수의 출석부만 통합 PDF 출력 
+ * =========================================================
+ */
+function exportAttendancePDF() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const mainSheet = ss.getSheetByName("출석부생성");
+  
+  let termValue = mainSheet ? mainSheet.getRange("B3").getValue() : "";
+  if (!termValue) {
+    ui.alert("B3 셀에 기수(예: 1기)가 입력되어 있지 않습니다.");
+    return;
+  }
+  
+  let term = String(termValue).trim();
+  if (!term.includes("기")) term += "기";
+
+  const excludeKeywords = ["원본", "명단"]; 
+  const excludeExactNames = ["출석부생성", "강좌기본정보", "출석부템플릿", "교사직인"]; 
+  
+  const allSheets = ss.getSheets();
+  
+  const targetSheets = allSheets.filter(sheet => {
+    const name = sheet.getName();
+    const isExcludedByName = excludeExactNames.includes(name);
+    const isExcludedByKeyword = excludeKeywords.some(keyword => name.includes(keyword));
+    
+    const isTargetTerm = name.startsWith(term);
+
+    return !isExcludedByName && !isExcludedByKeyword && isTargetTerm;
+  });
+
+  if (targetSheets.length === 0) {
+    ui.alert(`PDF로 변환할 [${term}] 출석부 시트를 찾을 수 없습니다.\n시트 이름이 '${term}'로 시작하는지 확인해주세요.`);
+    return;
+  }
+
+  ss.toast(`[${term}] 출석부들을 모아 임시 파일을 생성하고 있습니다...`, "작업 진행 중 ⏳", 5);
+
+  const tempSsName = "임시_출석부_통합_" + new Date().getTime();
+  const tempSs = SpreadsheetApp.create(tempSsName);
+  const tempSsId = tempSs.getId();
+
+  targetSheets.forEach(sheet => {
+    const copiedSheet = sheet.copyTo(tempSs);
+    copiedSheet.setName(sheet.getName()); 
+    
+    if (copiedSheet.isSheetHidden()) {
+      copiedSheet.showSheet(); 
+    }
+  });
+
+  const defaultSheet = tempSs.getSheets()[0];
+  tempSs.deleteSheet(defaultSheet);
+
+  SpreadsheetApp.flush();
+
+  ss.toast("PDF로 변환하여 구글 드라이브에 저장 중입니다...", "거의 다 되었습니다! 🚀", 10);
+
+  const pdfName = term + "_전체출석부_완료본.pdf";
+  const url = "https://docs.google.com/spreadsheets/d/" + tempSsId + "/export"
+            + "?format=pdf"
+            + "&size=A4"
+            + "&portrait=true"
+            + "&fitw=true"
+            + "&sheetnames=false"
+            + "&printtitle=false"
+            + "&pagenumbers=false"
+            + "&gridlines=false";
+
+  try {
+    const token = ScriptApp.getOAuthToken();
+    const response = UrlFetchApp.fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+
+    const blob = response.getBlob().setName(pdfName);
+    DriveApp.createFile(blob);
+    DriveApp.getFileById(tempSsId).setTrashed(true);
+
+    ui.alert(`✅ 통합 PDF 생성 완료!\n\n파일명: ${pdfName}\n\n구글 드라이브 최상단에 저장되었으며, 생성에 사용된 임시 시트는 안전하게 삭제되었습니다.`);
+    
+  } catch (e) {
+    DriveApp.getFileById(tempSsId).setTrashed(true);
+    ui.alert("PDF 생성 중 오류가 발생했습니다.\n" + e.message);
+  }
+}
