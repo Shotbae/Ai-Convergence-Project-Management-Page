@@ -1,6 +1,5 @@
-
-// 전체 코드 확인본: 2026-11-05.2 (온점 검사·헤더 필터 포함)
-var SETC_BUILD_ID_ = '2026-11-05.2';
+// 전체 코드 확인본: 2026-11-05.3 (선택 기수 통합·온점 검사·헤더 필터 포함)
+var SETC_BUILD_ID_ = '2026-11-05.3';
 
 /**
  * =========================================================
@@ -1262,30 +1261,46 @@ function openCompletionModal() {
   const html = HtmlService.createHtmlOutput(`<!DOCTYPE html><html><head><base target="_top">
     <style>body{font-family:'Malgun Gothic',sans-serif;padding:20px;color:#333}label{display:block;margin:16px 0 6px}
     select,button{width:100%;padding:10px;box-sizing:border-box}button{margin-top:20px;cursor:pointer}
+    fieldset{margin-top:16px;border:1px solid #ccc}#termChecks{max-height:150px;overflow:auto}
+    #termChecks label{display:inline-flex;align-items:center;gap:6px;margin:6px 14px 6px 0}
     #status{white-space:pre-wrap;margin-top:16px;font-size:13px}</style></head><body>
     <label for="mode">생성 방식</label><select id="mode" onchange="toggleTerm()">
     <option value="selected">선택 기수 명단 생성</option><option value="byTerm">전체 기수별 명단 생성</option>
-    <option value="integrated">전체 통합 명단 생성</option></select>
-    <label for="term">기수</label><select id="term"><option value="">불러오는 중...</option></select>
-    <p style="font-size:12px">기존 명단은 유지됩니다. 전체 통합은 모든 기수의 이수 내역을 한 시트에 모읍니다.</p>
+    <option value="integrated">전체 통합 명단 생성</option>
+    <option value="selectedIntegrated">선택 기수 통합 명단 생성</option></select>
+    <div id="termGroup"><label for="term">기수</label><select id="term"><option value="">불러오는 중...</option></select></div>
+    <fieldset id="termsGroup" hidden disabled><legend>통합할 기수 (여러 개 선택)</legend><div id="termChecks"></div></fieldset>
+    <p style="font-size:12px">선택 기수 통합은 체크한 기수만 한 시트에 모읍니다. 같은 조합의 기존 명단은 유지됩니다.</p>
     <button id="run" onclick="run()" disabled>명단 생성</button><div id="status" role="status" aria-live="polite"></div>
     <script>
     const mode=document.getElementById('mode'),term=document.getElementById('term'),button=document.getElementById('run'),status=document.getElementById('status');
-    function toggleTerm(){term.disabled=mode.value!=='selected';}
+    const termGroup=document.getElementById('termGroup'),termsGroup=document.getElementById('termsGroup'),termChecks=document.getElementById('termChecks');
+    function toggleTerm(){
+      termGroup.hidden=mode.value!=='selected';term.disabled=termGroup.hidden;
+      termsGroup.hidden=mode.value!=='selectedIntegrated';termsGroup.disabled=termsGroup.hidden;
+    }
     google.script.run.withSuccessHandler(function(terms){
       term.textContent='';term.add(new Option('-- 기수 선택 --',''));
-      terms.forEach(function(t){term.add(new Option(t,t));});button.disabled=false;
+      termChecks.textContent='';
+      terms.forEach(function(t){
+        term.add(new Option(t,t));
+        const label=document.createElement('label'),input=document.createElement('input'),caption=document.createElement('span');
+        input.type='checkbox';input.value=t;caption.textContent=t;label.appendChild(input);label.appendChild(caption);termChecks.appendChild(label);
+      });toggleTerm();button.disabled=false;
       if(!terms.length)status.textContent='생성할 출석부가 없습니다.';
     }).withFailureHandler(function(e){status.textContent=e.message;}).getCompletionTermList();
     function run(){
       if(mode.value==='selected'&&!term.value){status.textContent='기수를 선택해주세요.';return;}
-      mode.disabled=true;term.disabled=true;button.disabled=true;status.textContent='명단을 생성하고 있습니다...';
+      const selectedTerms=Array.from(document.querySelectorAll('#termChecks input:checked')).map(function(input){return input.value;});
+      if(mode.value==='selectedIntegrated'&&!selectedTerms.length){status.textContent='통합할 기수를 하나 이상 체크해주세요.';return;}
+      const selection=mode.value==='selectedIntegrated'?selectedTerms:term.value;
+      mode.disabled=true;term.disabled=true;termsGroup.disabled=true;button.disabled=true;status.textContent='명단을 생성하고 있습니다...';
       function unlock(){mode.disabled=false;toggleTerm();button.disabled=false;}
       google.script.run.withSuccessHandler(function(result){status.textContent=result.message;unlock();})
         .withFailureHandler(function(e){status.textContent='생성 실패: '+e.message;unlock();})
-        .executeCompletionTask(mode.value,term.value);
+        .executeCompletionTask(mode.value,selection);
     }
-    </script></body></html>`).setWidth(430).setHeight(470);
+    </script></body></html>`).setWidth(450).setHeight(550);
   SpreadsheetApp.getUi().showModalDialog(html, '최종 이수자 명단 생성');
 }
 
@@ -1299,26 +1314,47 @@ function executeCompletionTask(mode, term) {
   return generateCompletionLists_(mode, term);
 }
 
+/** 선택 순서와 관계없이 같은 조합은 같은 이름을 쓰며, 모호한 "12" 같은 문자열 입력은 받지 않습니다. */
+function normalizeCompletionTerms_(terms) {
+  if (!Array.isArray(terms) || !terms.length) throw new Error('통합할 기수를 하나 이상 선택해주세요.');
+  const selected = terms.map(term => {
+    if (typeof term !== 'string' || !/^[0-9]+기$/.test(term.trim())) throw new Error('올바른 기수 목록을 선택해주세요.');
+    return term.trim();
+  });
+  return [...new Set(selected)].sort((a, b) => parseInt(a, 10) - parseInt(b, 10) || a.localeCompare(b));
+}
+
 function generateCompletionLists_(mode, term) {
-  if (!['selected', 'byTerm', 'integrated'].includes(mode)) throw new Error('올바른 생성 방식을 선택해주세요.');
+  if (!['selected', 'byTerm', 'integrated', 'selectedIntegrated'].includes(mode)) throw new Error('올바른 생성 방식을 선택해주세요.');
+  const selectedTerms = mode === 'selectedIntegrated' ? normalizeCompletionTerms_(term) : [];
+  const selectedTermSet = new Set(selectedTerms);
   const termText = String(term || '').trim();
   if (mode === 'selected' && !/^[0-9]+기$/.test(termText)) throw new Error('생성할 기수를 선택해주세요.');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const lock = LockService.getDocumentLock();
   if (!lock || !lock.tryLock(10000)) throw new Error('다른 작업이 진행 중입니다. 잠시 후 다시 실행해주세요.');
   try {
-    const sheets = ss.getSheets().filter(s => {
+    const allSheets = ss.getSheets();
+    if (mode === 'selectedIntegrated') {
+      const available = new Set(allSheets.map(s => getAttendanceTermFromSheetName(s.getName())).filter(Boolean));
+      const missing = selectedTerms.filter(t => !available.has(t));
+      if (missing.length) throw new Error('출석부가 없는 기수입니다: ' + missing.join(', ') + '. 기수 목록을 새로 불러와주세요.');
+    }
+    const sheets = allSheets.filter(s => {
       const t = getAttendanceTermFromSheetName(s.getName());
-      return t && (mode !== 'selected' || t === termText);
+      return t && (mode === 'selected' ? t === termText : mode === 'selectedIntegrated' ? selectedTermSet.has(t) : true);
     });
     if (!sheets.length) return {created: [], skipped: [], empty: [], message: '생성할 출석부가 없습니다.'};
+    const combinedName = mode === 'integrated' ? '최종이수자명단'
+      : mode === 'selectedIntegrated' ? selectedTerms.join('+') + '_통합이수자명단' : '';
+    if (combinedName.length > 100) throw new Error('선택한 기수가 많아 시트 이름이 너무 깁니다. 기수를 나누어 선택해주세요.');
     // 기존 통합 명단도 수기로 작성한 G열을 보호하기 위해 그대로 유지합니다.
-    if (mode === 'integrated' && ss.getSheetByName('최종이수자명단')) {
-      return {created: [], skipped: ['최종이수자명단'], empty: [], message: '기존 최종이수자명단을 유지했습니다. 세특 전체 재검증 메뉴로 검증할 수 있습니다.'};
+    if (combinedName && ss.getSheetByName(combinedName)) {
+      return {created: [], skipped: [combinedName], empty: [], message: '기존 ' + combinedName + '을 유지했습니다. 세특 전체 재검증 메뉴로 검증할 수 있습니다.'};
     }
     const groups = new Map();
     sheets.forEach(sheet => {
-      const key = mode === 'integrated' ? '최종이수자명단' : getAttendanceTermFromSheetName(sheet.getName()) + '_최종이수자명단';
+      const key = combinedName || getAttendanceTermFromSheetName(sheet.getName()) + '_최종이수자명단';
       if (!groups.has(key)) groups.set(key, []);
       if (ss.getSheetByName(key)) return;
       const course = sheet.getRange('B3').getValue();
@@ -1405,7 +1441,8 @@ var SETC_COLUMN_MARKER_ = '세특 자동 검증 결과입니다. 빨간 표현�
 var SETC_CURSOR_KEY_ = 'SETC_REVALIDATE_CURSOR_V1';
 
 function isCompletionSheet_(sheet) {
-  return sheet.getName() === '최종이수자명단' || /^[0-9]+기_최종이수자명단$/.test(sheet.getName());
+  return sheet.getName() === '최종이수자명단' || /^[0-9]+기_최종이수자명단$/.test(sheet.getName())
+    || /^[0-9]+기(?:\+[0-9]+기)*_통합이수자명단$/.test(sheet.getName());
 }
 
 function ensureSetcColumn_(sheet) {

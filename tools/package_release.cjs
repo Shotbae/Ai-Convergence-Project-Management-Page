@@ -9,7 +9,7 @@ vm.runInContext(source.toString('utf8'), context);
 if (typeof context.checkSetcRuntime_ !== 'function' || !context.checkSetcRuntime_().ok) {
   throw new Error('Runtime punctuation checks failed; release was not created.');
 }
-for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_']) {
+for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_']) {
   if (typeof context[name] !== 'function') throw new Error('Missing feature: ' + name);
 }
 const version = context.SETC_BUILD_ID_;

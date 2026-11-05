@@ -15,7 +15,7 @@ module.exports = function ({context, test, assert}) {
     vm.runInContext(release.toString('utf8'), delivered);
     assert.equal(delivered.SETC_BUILD_ID_, manifest.version);
     assert.equal(delivered.checkSetcRuntime_().ok, true);
-    for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_']) {
+    for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_']) {
       assert.equal(typeof delivered[name], 'function');
     }
   });

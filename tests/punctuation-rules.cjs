@@ -6,7 +6,7 @@ module.exports = function ({context, test, assert, normalize}) {
 
   test('Runtime check validates both reported screenshot sentences with missing middle and final punctuation', () => {
     const report = normalize(context.checkSetcRuntime_());
-    assert.equal(report.version, '2026-11-05.2');
+    assert.equal(report.version, context.SETC_BUILD_ID_);
     assert.equal(report.ok, true);
     assert.equal(report.results.length, 2);
     assert.ok(report.results.every(result => result.middle && result.ending));

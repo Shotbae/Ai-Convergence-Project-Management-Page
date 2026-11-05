@@ -322,6 +322,155 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.deepEqual(s.getRange('B2:D3').getValues(), [[20101, '학생', '1기'], [20101, '학생', '2기']]);
   });
 
+  test('Selected integrated lists include exactly the chosen terms and retain multiple records per student', () => {
+    const e = environment();
+    e.attendance('1기01강좌', [[1, 20101, '학생1', true, '']]);
+    e.attendance('2기01강좌', [[1, 20101, '학생1', true, '']]);
+    e.attendance('3기01강좌', [[1, 20103, '학생3', true, '']]);
+    e.attendance('4기01강좌', [[1, 20104, '학생4', true, '']]);
+    e.attendance('11기01강좌', [[1, 20111, '학생11', true, '']]);
+    for (const terms of [['1기', '2기', '3기'], ['1기', '2기'], ['2기', '3기'], ['1기', '11기']]) {
+      const result = e.context.executeCompletionTask('selectedIntegrated', terms);
+      assert.equal(result.created.length, 1);
+      const s = e.ss.getSheetByName(terms.join('+') + '_통합이수자명단');
+      assert.ok(s);
+      assert.equal(s.getLastRow(), terms.length + 1);
+      assert.deepEqual(s.getRange(2, 4, terms.length, 1).getValues().map(row => row[0]), terms);
+      assert.equal(s.getFilter().getRange().getLastColumn(), 9);
+    }
+    assert.deepEqual(e.ss.getSheetByName('1기+2기_통합이수자명단').getRange('B2:D3').getValues(),
+      [[20101, '학생1', '1기'], [20101, '학생1', '2기']]);
+    assert.equal(e.ss.getSheetByName('최종이수자명단'), null);
+    assert.equal(e.ss.getSheetByName('4기_최종이수자명단'), null);
+  });
+
+  test('Newly added fourth, fifth and later terms appear automatically and only checked terms are integrated', () => {
+    const e = environment();
+    e.attendance('1기01강좌', [[1, 20101, '기존학생1', true, '']]);
+    e.attendance('2기01강좌', [[1, 20102, '기존학생2', true, '']]);
+    assert.deepEqual(normalize(e.context.getCompletionTermList()), ['1기', '2기']);
+    for (const term of [10, 5, 4]) e.attendance(term + '기01강좌', [[1, 24000 + term, '추가학생' + term, true, '']]);
+    assert.deepEqual(normalize(e.context.getCompletionTermList()), ['1기', '2기', '4기', '5기', '10기']);
+    e.context.executeCompletionTask('selectedIntegrated', ['10기', '4기', '5기']);
+    const s = e.ss.getSheetByName('4기+5기+10기_통합이수자명단');
+    assert.deepEqual(s.getRange('B2:D4').getValues(), [
+      [24004, '추가학생4', '4기'], [24005, '추가학생5', '5기'], [24010, '추가학생10', '10기']]);
+    e.attendance('6기01강좌', [[1, 24006, '추가학생6', true, '']]);
+    assert.ok(e.context.getCompletionTermList().includes('6기'));
+    e.context.executeCompletionTask('selectedIntegrated', ['5기', '6기']);
+    assert.deepEqual(e.ss.getSheetByName('5기+6기_통합이수자명단').getRange('D2:D3').getValues(), [['5기'], ['6기']]);
+    assert.equal(e.ss.getSheetByName('최종이수자명단'), null);
+  });
+
+  test('Selected integrated requests reject empty, malformed, missing and overlong selections before changing sheets', () => {
+    const e = environment();
+    e.attendance('1기01강좌', [[1, 20101, '학생1', true, '']]);
+    e.attendance('2기01강좌', [[1, 20102, '학생2', true, '']]);
+    const beforeNames = e.ss.getSheets().map(s => s.getName());
+    for (const selection of [undefined, [], '12', ['1기,2기'], [1, 2], ['1기', ''], ['1기', null], ['1기', '11기']]) {
+      assert.throws(() => e.context.executeCompletionTask('selectedIntegrated', selection), /기수/);
+      assert.deepEqual(e.ss.getSheets().map(s => s.getName()), beforeNames);
+      assert.equal(e.lock.held, false);
+    }
+    assert.deepEqual(normalize(e.context.normalizeCompletionTerms_(['11기', ' 2기 ', '1기', '2기'])), ['1기', '2기', '11기']);
+    const many = environment(), terms = Array.from({length: 20}, (_, i) => (100 + i) + '기');
+    for (const term of terms) many.attendance(term + '01강좌', []);
+    assert.throws(() => many.context.executeCompletionTask('selectedIntegrated', terms), /시트 이름이 너무/);
+    assert.equal(many.ss.getSheets().length, terms.length);
+    assert.equal(many.lock.held, false);
+  });
+
+  test('Reordered and duplicate choices reuse the same selected integrated list without changing handwritten data or filters', () => {
+    const e = environment();
+    e.attendance('1기01강좌', [[1, 20101, '학생1', true, '']]);
+    e.attendance('2기01강좌', [[1, 20102, '학생2', true, '']]);
+    e.context.executeCompletionTask('selectedIntegrated', ['2기', '1기']);
+    const s = e.ss.getSheetByName('1기+2기_통합이수자명단');
+    s.getRange('G2').setValue('수기 세특 보존'); s.getRange('H2').setValue('=99'); s.getRange('I2').setValue('기존 사유');
+    const filter = s.getFilter(), criterion = {hidden: ['학생2']}; filter.setColumnFilterCriteria(3, criterion);
+    const before = JSON.stringify([...s.grid]);
+    const result = e.context.executeCompletionTask('selectedIntegrated', ['1기', '2기', '1기']);
+    assert.deepEqual(normalize(result.skipped), ['1기+2기_통합이수자명단']);
+    assert.equal(JSON.stringify([...s.grid]), before);
+    assert.equal(s.getFilter(), filter);
+    assert.equal(filter.getColumnFilterCriteria(3), criterion);
+  });
+
+  test('Selected integrated lists retain three-day completion, bytes, punctuation validation and batch support', () => {
+    const e = environment();
+    e.attendance('1기01강좌', [[1, 20101, '학생1', true, '']]);
+    const three = e.add('2기01세차시강좌');
+    three.getRange('E7:F7').setValues([['11/2', '3일차']]);
+    three.getRange('A8:F9').setValues([[1, 20102, '학생2', true, true, true], [2, 20103, '미이수학생', true, true, false]]);
+    e.context.executeCompletionTask('selectedIntegrated', ['2기', '1기']);
+    const s = e.ss.getSheetByName('1기+2기_통합이수자명단');
+    assert.deepEqual(s.getRange('B2:C3').getValues(), [[20101, '학생1'], [20102, '학생2']]);
+    const text = '원리를 이해함 추가적으로 탐구함';
+    s.getRange('G2').setValue(text); e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('I2').getValue(), '이해함: 문장부호 누락 의심(확인필요)\n탐구함: 문장 끝 온점 누락(확인필요)');
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(text, 'utf8'));
+    s.getRange('G3').setValue('아버지가 의사임');
+    const backup = e.add('보관_1기+2기_통합이수자명단'); backup.getRange('G2').setValue('검사 제외 대상');
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('I3').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
+    assert.equal(backup.getRange('I2').getValue(), '');
+    assert.deepEqual(normalize(e.context.getCompletionTermList()), ['1기', '2기']);
+  });
+
+  test('Selected integrated lists handle empty terms and a single choice independently from ordinary lists', () => {
+    const e = environment();
+    const one = e.attendance('1기01강좌', [[1, 20101, '학생1', false, '']]);
+    e.attendance('2기01강좌', []);
+    const empty = e.context.executeCompletionTask('selectedIntegrated', ['1기', '2기']);
+    assert.deepEqual(normalize(empty.empty), ['1기+2기_통합이수자명단']);
+    assert.equal(e.ss.getSheetByName('1기+2기_통합이수자명단'), null);
+    one.getRange('D8').setValue(true);
+    e.context.executeCompletionTask('selectedIntegrated', ['1기', '2기']);
+    assert.equal(e.ss.getSheetByName('1기+2기_통합이수자명단').getLastRow(), 2);
+    e.context.executeCompletionTask('selectedIntegrated', ['1기']);
+    e.context.executeCompletionTask('selected', '1기');
+    assert.ok(e.ss.getSheetByName('1기_통합이수자명단'));
+    assert.ok(e.ss.getSheetByName('1기_최종이수자명단'));
+  });
+
+  test('Completion modal sends checked terms, blocks empty selection and restores controls after success or failure', () => {
+    const e = environment();
+    for (const term of [1, 4, 5, 10, 11]) e.attendance(term + '기01강좌', []);
+    e.context.openCompletionModal();
+    const element = () => ({children: [], value: '', disabled: false, hidden: false, textContent: '',
+      appendChild(child) { this.children.push(child); }, add(option) { this.children.push(option); }});
+    const nodes = Object.fromEntries(['mode', 'term', 'run', 'status', 'termGroup', 'termsGroup', 'termChecks'].map(id => [id, element()]));
+    nodes.mode.value = 'selected'; nodes.run.disabled = true;
+    const inputs = () => nodes.termChecks.children.flatMap(label => label.children).filter(child => child.type === 'checkbox');
+    const requests = [], pending = [];
+    const bridge = {withSuccessHandler(fn) { this.success = fn; return this; }, withFailureHandler(fn) { this.failure = fn; return this; },
+      getCompletionTermList() { this.success(e.context.getCompletionTermList()); },
+      executeCompletionTask(mode, selection) { requests.push({mode, selection}); pending.push({success: this.success, failure: this.failure}); }};
+    const client = vm.createContext({document: {getElementById: id => nodes[id], createElement: element,
+      querySelectorAll: selector => { assert.equal(selector, '#termChecks input:checked'); return inputs().filter(input => input.checked); }},
+      Option: function (text, value) { this.text = text; this.value = value; }, google: {script: {run: bridge}}});
+    const script = /<script>([\s\S]*?)<\/script>/.exec(e.modal.html)[1];
+    vm.runInContext(script, client);
+    assert.deepEqual(inputs().map(input => input.value), ['1기', '4기', '5기', '10기', '11기']);
+    assert.equal(nodes.termsGroup.hidden, true);
+    nodes.mode.value = 'selectedIntegrated'; client.toggleTerm();
+    assert.equal(nodes.termGroup.hidden, true); assert.equal(nodes.termsGroup.hidden, false);
+    client.run(); assert.equal(requests.length, 0); assert.match(nodes.status.textContent, /하나 이상 체크/);
+    inputs()[0].checked = true; inputs()[1].checked = true;
+    client.run();
+    assert.deepEqual(normalize(requests[0]), {mode: 'selectedIntegrated', selection: ['1기', '4기']});
+    assert.equal(nodes.mode.disabled, true); assert.equal(nodes.termsGroup.disabled, true);
+    pending[0].failure({message: '일시적 오류'});
+    assert.equal(nodes.mode.disabled, false); assert.equal(nodes.termsGroup.disabled, false);
+    inputs()[0].checked = false; inputs()[2].checked = true;
+    client.run();
+    assert.deepEqual(normalize(requests[1]), {mode: 'selectedIntegrated', selection: ['4기', '5기']});
+    pending[1].success({message: '완료'}); assert.equal(nodes.status.textContent, '완료');
+    nodes.mode.value = 'selected'; nodes.term.value = '5기'; client.toggleTerm(); client.run();
+    assert.deepEqual(normalize(requests[2]), {mode: 'selected', selection: '5기'});
+    pending[2].success({message: '완료'}); assert.equal(nodes.run.disabled, false);
+  });
+
   test('Edit renders only evidence red, preserves source, other styles and H formula; correction clears', () => {
     const e = environment(), s = e.add('최종이수자명단', 8);
     const text = '😀 유튜브 영상을 분석함.';
@@ -529,11 +678,12 @@ module.exports = function ({source, test, assert, normalize}) {
   });
 
   test('Every generation mode filters the full A:I header and all student rows', () => {
-    for (const mode of ['selected', 'byTerm', 'integrated']) {
+    for (const mode of ['selected', 'byTerm', 'integrated', 'selectedIntegrated']) {
       const e = environment();
       e.attendance('1기01강좌', [[1, 20101, '학생1', true, ''], [2, 20102, '학생2', true, '']]);
-      e.context.executeCompletionTask(mode, mode === 'selected' ? '1기' : '');
-      const s = e.ss.getSheetByName(mode === 'integrated' ? '최종이수자명단' : '1기_최종이수자명단');
+      e.context.executeCompletionTask(mode, mode === 'selected' ? '1기' : mode === 'selectedIntegrated' ? ['1기'] : '');
+      const s = e.ss.getSheetByName(mode === 'integrated' ? '최종이수자명단'
+        : mode === 'selectedIntegrated' ? '1기_통합이수자명단' : '1기_최종이수자명단');
       const range = s.getFilter().getRange();
       assert.deepEqual([range.getRow(), range.getColumn(), range.getLastRow(), range.getLastColumn()], [1, 1, 3, 9]);
       assert.ok(s.getRange('A1:I1').getValues()[0].every(Boolean));
@@ -655,7 +805,7 @@ module.exports = function ({source, test, assert, normalize}) {
         assert.ok(rich.styles.slice(second.indexOf(word), second.indexOf(word) + word.length).every(style => style.color === '#ff0000'));
       }
       assert.ok(rich.styles.slice(second.indexOf('판단함을'), second.indexOf('판단함을') + 4).every(style => style.color === '#000000'));
-      if (action === 'batch') assert.match(e.alerts.at(-1), /온점 검사 포함 \/ 2026-11-05\.2/);
+      if (action === 'batch') assert.ok(e.alerts.at(-1).includes('온점 검사 포함 / ' + e.context.SETC_BUILD_ID_));
     }
   });
 
@@ -663,7 +813,8 @@ module.exports = function ({source, test, assert, normalize}) {
     const e = environment(), s = e.add('최종이수자명단');
     s.getRange('G2').setValue('이전 내용을 보존함');
     e.context.showSetcValidationStatus();
-    assert.match(e.alerts.at(-1), /2026-11-05\.2[\s\S]*문장 중간 누락 의심: 정상[\s\S]*문장 끝 온점 누락: 정상/);
+    assert.ok(e.alerts.at(-1).includes(e.context.SETC_BUILD_ID_));
+    assert.match(e.alerts.at(-1), /문장 중간 누락 의심: 정상[\s\S]*문장 끝 온점 누락: 정상/);
     const before = JSON.stringify([...s.grid]);
     e.context.checkSetcLocalRules = text => e.context.checkSetcReferenceRules_(text);
     assert.equal(e.context.checkSetcRuntime_().ok, false);
@@ -673,11 +824,11 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getFilter(), null);
   });
 
-  test('Menu retains existing entry points and modal has three generation modes', () => {
+  test('Menu retains existing entry points and modal has four generation modes', () => {
     const e = environment(); e.context.onOpen(); e.context.openCompletionModal();
     const names = e.menus[0].items.map(i => i.fn);
     for (const name of ['openAdminModal', 'promptAbsenteeCheck', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'openCompletionModal', 'revalidateAllSetc', 'showSetcValidationStatus']) assert.ok(names.includes(name));
-    for (const mode of ['selected', 'byTerm', 'integrated']) assert.ok(e.modal.html.includes('value="' + mode + '"'));
+    for (const mode of ['selected', 'byTerm', 'integrated', 'selectedIntegrated']) assert.ok(e.modal.html.includes('value="' + mode + '"'));
     assert.ok(e.modal.html.includes('new Option'));
   });
 };
