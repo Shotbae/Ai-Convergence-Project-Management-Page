@@ -7,20 +7,41 @@ module.exports = function ({source, test, assert, normalize}) {
     build() { return {...this.style}; }
   }
   class Rich {
-    constructor(text, styles) { this.text = text; this.styles = styles || Array.from({length: text.length}, () => ({bold: true})); }
-    copy() { return new RichBuilder(this.text, this.styles); }
+    constructor(text, styles, links, start = 0) {
+      this.text = text; this.styles = styles || Array.from({length: text.length}, () => ({bold: true}));
+      this.links = links || Array(text.length).fill(null); this.start = start;
+    }
+    copy() { return new RichBuilder(this.text, this.styles, this.links); }
     getText() { return this.text; }
+    getStartIndex() { return this.start; }
+    getEndIndex() { return this.start + this.text.length; }
+    getTextStyle() { return {...this.styles[0]}; }
+    getLinkUrl(start = 0, end = this.text.length) {
+      const links = [...new Set(this.links.slice(start, end))];
+      return links.length === 1 ? links[0] : null;
+    }
+    getRuns() {
+      const runs = [];
+      for (let start = 0; start < this.text.length;) {
+        let end = start + 1;
+        while (end < this.text.length && JSON.stringify(this.styles[start]) === JSON.stringify(this.styles[end])) end++;
+        runs.push(new Rich(this.text.slice(start, end), this.styles.slice(start, end), this.links.slice(start, end), this.start + start));
+        start = end;
+      }
+      return runs;
+    }
   }
   class RichBuilder {
-    constructor(text = '', styles) { this.text = text; this.styles = styles ? styles.map(s => ({...s})) : []; }
-    setText(text) { this.text = text; this.styles = Array.from({length: text.length}, () => ({})); return this; }
+    constructor(text = '', styles, links) { this.text = text; this.styles = styles ? styles.map(s => ({...s})) : []; this.links = links ? links.slice() : Array(text.length).fill(null); }
+    setText(text) { this.text = text; this.styles = Array.from({length: text.length}, () => ({})); this.links = Array(text.length).fill(null); return this; }
+    setLinkUrl(start, end, url) { for (let i = start; i < end; i++) this.links[i] = url; return this; }
     setTextStyle(...args) {
       const [start, end, style] = args.length === 1 ? [0, this.text.length, args[0]] : args;
       if (start < 0 || end > this.text.length || start >= end) throw new Error('Invalid rich text offsets');
       for (let i = start; i < end; i++) this.styles[i] = {...this.styles[i], ...style};
       return this;
     }
-    build() { return new Rich(this.text, this.styles.map(s => ({...s}))); }
+    build() { return new Rich(this.text, this.styles.map(s => ({...s})), this.links.slice()); }
   }
   function environment() {
     const env = {alerts: [], toasts: [], menus: [], props: new Map(), sheets: [], nextId: 1, clock: 0, clockStep: 0};
@@ -36,7 +57,17 @@ module.exports = function ({source, test, assert, normalize}) {
       getLastRow() { return this.row + this.rows - 1; }
       getLastColumn() { return this.col + this.cols - 1; }
       getValues() { return this.cells().map(row => row.map(c => c.value)); }
-      getValue() { return this.cells()[0][0].value; }
+      getValue() {
+        const cell = this.cells()[0][0];
+        const byteFormula = /^=GET_NEIS_BYTE\(G(\d+)\)$/.exec(cell.formula);
+        const conditionalByteFormula = /^=IF\(G(\d+)="","",GET_NEIS_BYTE\(G\1\)\)$/.exec(cell.formula);
+        const match = byteFormula || conditionalByteFormula;
+        if (match) {
+          const text = this.sheet.cell(+match[1], 7).value;
+          return conditionalByteFormula && text === '' ? '' : env.context.GET_NEIS_BYTE(text);
+        }
+        return cell.value;
+      }
       getFormulas() { return this.cells().map(row => row.map(c => c.formula)); }
       getFormula() { return this.cells()[0][0].formula; }
       getNote() { return this.cells()[0][0].note; }
@@ -293,6 +324,80 @@ module.exports = function ({source, test, assert, normalize}) {
     e.context.revalidateAllSetc();
     assert.equal(s.getRange('G3').getValue(), '한 번 더 검토함.');
     assert.equal(s.getRange('I3').getValue(), '한 번 더: 한 글자 어절 연속 사용(확인필요)');
+  });
+
+  test('Edit collapses ASCII spaces before checking, recalculates bytes and keeps line breaks', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    const input = '유튜브  영상을 정리함.\n특허   원리를 탐구함.';
+    const expected = '유튜브 영상을 정리함.\n특허 원리를 탐구함.';
+    s.getRange('G2').setValue(input);
+    const formula = '=IF(G2="","",GET_NEIS_BYTE(G2))';
+    s.getRange('H2').setValue(formula);
+    const beforeBytes = s.getRange('H2').getValue();
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), expected);
+    assert.equal(s.getRange('H2').getFormula(), formula);
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(expected, 'utf8'));
+    assert.equal(beforeBytes - s.getRange('H2').getValue(), 3);
+    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)\n특허: 지식재산권 관련 표현 확인 필요');
+    const rich = s.getRange('G2').getRichTextValue();
+    for (const phrase of ['유튜브', '특허']) {
+      const start = expected.indexOf(phrase);
+      assert.ok(rich.styles.slice(start, start + phrase.length).every(style => style.color === '#ff0000'));
+    }
+  });
+
+  test('Space cleanup remaps mixed styles and distinct links without changing remaining characters', () => {
+    const e = environment(), s = e.add('1기_최종이수자명단');
+    const input = '😀  앞  링크  뒤를 정리함.', expected = '😀 앞 링크 뒤를 정리함.';
+    const builder = new RichBuilder().setText(input).setTextStyle({bold: true, fontFamily: 'TestFont'});
+    const first = input.indexOf('앞'), second = input.indexOf('링크'), italic = input.indexOf('뒤를');
+    builder.setLinkUrl(first, first + 1, 'https://example.com/first');
+    builder.setLinkUrl(second, second + 2, 'https://example.com/second');
+    builder.setTextStyle(italic, italic + 2, {italic: true});
+    s.getRange('G2').setRichTextValue(builder.build());
+    e.edit(s.getRange('G2'));
+    const rich = s.getRange('G2').getRichTextValue();
+    assert.equal(rich.getText(), expected);
+    assert.equal(rich.getLinkUrl(expected.indexOf('앞'), expected.indexOf('앞') + 1), 'https://example.com/first');
+    assert.equal(rich.getLinkUrl(expected.indexOf('링크'), expected.indexOf('링크') + 2), 'https://example.com/second');
+    assert.equal(rich.getLinkUrl(2, 3), null);
+    assert.equal(rich.styles[expected.indexOf('뒤를')].italic, true);
+    assert.ok(rich.styles.every(style => style.bold && style.fontFamily === 'TestFont'));
+    assert.equal(rich.styles[0].color, '#ff0000');
+    assert.equal(rich.styles[expected.indexOf('앞')].color, '#000000');
+  });
+
+  test('Batch revalidation cleans existing text and refreshes reasons while preserving non-ASCII whitespace', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    e.context.ensureSetcColumn_(s);
+    const input = '한  번   더 검토함.\r\n둘째  문장을 정리함.';
+    const expected = '한 번 더 검토함.\r\n둘째 문장을 정리함.';
+    const special = '숨은\t\t공백\u00a0\u00a0검토함.';
+    s.getRange('G2:G5').setValues([[input], [special], ['="내용  결과"'], ['   ']]);
+    s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    s.getRange('H5').setValue('=GET_NEIS_BYTE(G5)');
+    s.getRange('I2').setValue('연속 공백 사용');
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('G2').getValue(), expected);
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(expected, 'utf8'));
+    assert.equal(s.getRange('I2').getValue(), '한 번 더: 한 글자 어절 연속 사용(확인필요)');
+    assert.equal(s.getRange('G3').getValue(), special);
+    assert.match(s.getRange('I3').getValue(), /숨은 문자·비표준 공백 사용/);
+    assert.equal(s.getRange('G4').getFormula(), '="내용  결과"');
+    assert.match(s.getRange('I4').getValue(), /수식 셀/);
+    assert.equal(s.getRange('G5').getValue(), ' ');
+    assert.equal(s.getRange('H5').getValue(), 1);
+    assert.equal(s.getRange('I5').getValue(), '');
+  });
+
+  test('Cleanup does not overwrite a newer user edit', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G2').setValue('기존  내용을 정리함.');
+    e.onRichRead = () => s.getRange('G2').setValue('새로   입력한 내용을 보존함.');
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), '새로   입력한 내용을 보존함.');
+    assert.equal(s.getRange('I2').getValue(), '재검증 필요');
   });
 
   test('Menu retains existing entry points and modal has three generation modes', () => {

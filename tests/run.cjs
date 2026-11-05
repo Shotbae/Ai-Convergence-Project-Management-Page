@@ -69,4 +69,5 @@ test('All prior unrelated functions remain byte-equivalent after newline normali
 
 require('./sheets.cjs')({source, test, assert, normalize});
 require('./additional-rules.cjs')({context, test, assert, normalize});
+require('./space-normalization.cjs')({context, test, assert, normalize});
 console.log('Passed', passed, 'test groups');

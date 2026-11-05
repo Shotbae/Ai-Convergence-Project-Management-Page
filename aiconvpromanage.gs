@@ -1398,21 +1398,80 @@ function validateSetcRow_(sheet, row) {
   const value = cell.getValue();
   if (value === '') { cell.setFontColor('#000000'); output.clearContent(); return; }
   if (typeof value !== 'string') { output.setValue('세특 내용을 문자열로 입력해주세요.'); return; }
-  const issues = checkSetcLocalRules(value);
+  const normalized = normalizeSetcSpaces_(value);
+  const text = normalized.text;
+  const issues = checkSetcLocalRules(text);
   const black = SpreadsheetApp.newTextStyle().setForegroundColor('#000000').build();
   const red = SpreadsheetApp.newTextStyle().setForegroundColor('#ff0000').build();
   const existing = cell.getRichTextValue();
-  const builder = existing ? existing.copy() : SpreadsheetApp.newRichTextValue().setText(value);
+  if (existing && existing.getText() !== value) { output.setValue('재검증 필요'); return; }
+  const builder = text === value
+    ? (existing ? existing.copy() : SpreadsheetApp.newRichTextValue().setText(text))
+    : buildNormalizedSetcRichText_(existing, normalized);
   builder.setTextStyle(black);
   issues.forEach(issue => issue.spans.forEach(span => builder.setTextStyle(span.start, span.end, red)));
   // 잠금은 다른 스크립트 작업끼리 적용되므로 사용자 입력은 쓰기 직전에 다시 확인합니다.
   if (cell.getValue() !== value || cell.getFormula()) { output.setValue('재검증 필요'); return; }
   cell.setRichTextValue(builder.build());
-  if (cell.getValue() !== value || cell.getFormula()) { output.setValue('재검증 필요'); return; }
+  if (cell.getValue() !== text || cell.getFormula()) { output.setValue('재검증 필요'); return; }
   // '='로 시작하는 검출 표현도 수식이 아닌 텍스트로 기록합니다.
   const explanation = formatSetcIssues_(issues);
   if (explanation) output.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(explanation).build());
   else output.clearContent();
+}
+
+/** 일반 스페이스(U+0020)만 한 칸으로 정리하고, 남는 글자의 원래 위치를 반환합니다. */
+function normalizeSetcSpaces_(text) {
+  const segments = [], parts = [];
+  let sourceStart = 0, targetStart = 0;
+  const keep = sourceEnd => {
+    if (sourceEnd > sourceStart) {
+      const part = text.slice(sourceStart, sourceEnd);
+      parts.push(part);
+      segments.push({sourceStart: sourceStart, sourceEnd: sourceEnd, targetStart: targetStart});
+      targetStart += part.length;
+    }
+  };
+  for (const match of text.matchAll(/ {2,}/g)) {
+    keep(match.index + 1); // 각 연속 구간의 첫 스페이스 한 개는 남깁니다.
+    sourceStart = match.index + match[0].length;
+  }
+  keep(text.length);
+  return {text: parts.join(''), segments: segments};
+}
+
+/** 공백을 줄인 뒤 남는 글자의 부분 서식과 링크를 원래 위치에서 옮깁니다. */
+function buildNormalizedSetcRichText_(existing, normalized) {
+  const builder = SpreadsheetApp.newRichTextValue().setText(normalized.text);
+  if (!existing) return builder;
+  // 같은 글자 서식 구간에 서로 다른 링크가 있어도 글자별 URL을 보존합니다.
+  const sourceText = existing.getText();
+  let link = null, linkStart = 0, linkEnd = 0;
+  const flushLink = () => { if (link !== null && linkEnd > linkStart) builder.setLinkUrl(linkStart, linkEnd, link); };
+  normalized.segments.forEach(segment => {
+    let source = segment.sourceStart, target = segment.targetStart;
+    const part = sourceText.slice(segment.sourceStart, segment.sourceEnd);
+    for (const ch of part) {
+      const url = existing.getLinkUrl(source, source + ch.length);
+      if (url === link && target === linkEnd) linkEnd += ch.length;
+      else { flushLink(); link = url; linkStart = target; linkEnd = target + ch.length; }
+      source += ch.length;
+      target += ch.length;
+    }
+  });
+  flushLink();
+  const runs = existing.getRuns();
+  let runIndex = 0;
+  normalized.segments.forEach(segment => {
+    while (runIndex < runs.length && runs[runIndex].getEndIndex() <= segment.sourceStart) runIndex++;
+    for (let i = runIndex; i < runs.length && runs[i].getStartIndex() < segment.sourceEnd; i++) {
+      const start = Math.max(segment.sourceStart, runs[i].getStartIndex());
+      const end = Math.min(segment.sourceEnd, runs[i].getEndIndex());
+      if (end > start) builder.setTextStyle(segment.targetStart + start - segment.sourceStart,
+        segment.targetStart + end - segment.sourceStart, runs[i].getTextStyle());
+    }
+  });
+  return builder;
 }
 
 function formatSetcIssues_(issues) {
