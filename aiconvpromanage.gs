@@ -1364,6 +1364,37 @@ function writeCompletionList_(sheet, students) {
   sheet.setColumnWidth(7, 400);
   sheet.setColumnWidth(8, 100);
   ensureSetcColumn_(sheet);
+  ensureCompletionFilter_(sheet);
+}
+
+/** 헤더와 모든 기록을 함께 필터링합니다. 기존 A1 필터의 열별 조건은 보존합니다. */
+function ensureCompletionFilter_(sheet) {
+  const lastRow = Math.max(2, sheet.getLastRow());
+  const existing = sheet.getFilter();
+  if (!existing) { sheet.getRange(1, 1, lastRow, 9).createFilter(); return ''; }
+  const range = existing.getRange();
+  if (range.getRow() !== 1 || range.getColumn() !== 1) {
+    return sheet.getName() + ': 기존 필터가 A1에서 시작하지 않아 그대로 유지했습니다. 필터 범위를 확인해주세요.';
+  }
+  if (range.getLastColumn() >= 9 && range.getLastRow() >= lastRow) return '';
+  const criteria = [];
+  for (let col = 1; col <= range.getLastColumn(); col++) {
+    const criterion = existing.getColumnFilterCriteria(col);
+    if (criterion) criteria.push([col, criterion]);
+  }
+  const applyCriteria = filter => criteria.forEach(entry => filter.setColumnFilterCriteria(entry[0], entry[1]));
+  existing.remove();
+  try {
+    const filter = sheet.getRange(1, 1, Math.max(lastRow, range.getLastRow()), Math.max(9, range.getLastColumn())).createFilter();
+    applyCriteria(filter);
+  } catch (error) {
+    // 범위 확장 실패 시에도 원래 필터와 조건을 복원합니다.
+    const partial = sheet.getFilter();
+    if (partial) partial.remove();
+    applyCriteria(range.createFilter());
+    throw error;
+  }
+  return '';
 }
 
 var SETC_COLUMN_MARKER_ = '세특 자동 검증 결과입니다. 빨간 표현과 오류 사유를 확인하고 교사가 판단해주세요.';
@@ -1522,13 +1553,15 @@ function revalidateAllSetc() {
     let index = cursor ? sheets.findIndex(s => s.getSheetId() === cursor.sheetId) : 0;
     if (index < 0) { index = 0; cursor = null; }
     let count = 0, pending = false;
-    const failed = [], deadline = Date.now() + 240000;
+    const failed = [], filterNotices = [], deadline = Date.now() + 240000;
     for (; index < sheets.length; index++) {
       const sheet = sheets[index];
       let row = cursor && cursor.sheetId === sheet.getSheetId() ? Math.max(2, cursor.row) : 2;
       const last = sheet.getLastRow();
       try {
         ensureSetcColumn_(sheet);
+        const filterNotice = ensureCompletionFilter_(sheet);
+        if (filterNotice) filterNotices.push(filterNotice);
         if (row <= last) sheet.getRange(row, 9, last - row + 1, 1).setValue('재검증 필요');
         for (; row <= last; row++) {
           if (count >= 200 || Date.now() >= deadline) {
@@ -1546,6 +1579,7 @@ function revalidateAllSetc() {
     message = '세특 재검증: ' + count + '행 처리\n' + (pending ? '남은 행이 있습니다. 같은 메뉴를 다시 눌러 이어서 처리해주세요.' : '현재 검사 범위 처리가 끝났습니다.');
     if (!sheets.length) message = '검사할 이수자 명단이 없습니다.';
     if (failed.length) message += '\n처리 실패(자료 유지):\n' + failed.join('\n');
+    if (filterNotices.length) message += '\n필터 확인:\n' + filterNotices.join('\n');
   } finally { lock.releaseLock(); }
   SpreadsheetApp.getUi().alert(message);
 }
@@ -1820,6 +1854,66 @@ function checkSetcAdditionalRules_(text) {
     reason: '한 글자 어절 연속 사용(확인필요)',
     spans: singleSpans,
     reviewLevel: 'REVIEW'
+  });
+  return issues.concat(checkSetcPunctuationRules_(text));
+}
+
+// 문장 중간의 종결 후보 목록입니다. 원본 검증기의 받침 검사와 별도로 관리합니다.
+var SETC_SENTENCE_ENDINGS_ = ['함', '됨', '임', '있음', '없음', '보임', '느낌', '깨달음', '얻음',
+  '읽음', '받음', '찾음', '갖춤', '배움', '세움', '키움', '나눔', '기름', '이끎', '앎', '만듦',
+  '줌', '봄', '익힘', '높임', '넓힘', '밝힘', '드러냄', '이룸', '펼침', '거침', '마침', '돋움',
+  '했음', '됐음', '었음', '았음', '였음', '좋음', '높음', '깊음', '많음', '적음', '옳음'];
+var SETC_SENTENCE_NOUN_EXCEPTIONS_ = ['함', '임', '포함', '성함', '존함', '직함', '명함', '결함',
+  '책임', '위임', '담임', '전임', '후임', '신임', '취임', '퇴임', '모임', '게임', '라임', '프레임', '타임', '클레임',
+  '처음', '다음', '마음', '도움', '웃음', '울음', '걸음', '믿음', '꿈', '삶', '봄', '기름'];
+
+/** 형태에 따른 확인 후보입니다. 문장 의미를 확정하거나 온점을 자동 삽입하지 않습니다. */
+function checkSetcPunctuationRules_(text) {
+  if (typeof text !== 'string' || !text) return [];
+  const issues = [], middleSpans = [];
+  const quoted = [], quotePairs = new Map([['"', '"'], ["'", "'"], ['“', '”'], ['‘', '’']]);
+  let quoteEnd = '', quoteStart = -1;
+  // 닫히지 않은 따옴표가 반복돼도 본문을 한 번만 순회합니다.
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    if (quoteEnd) {
+      if (ch === quoteEnd) { quoted.push({start: quoteStart, end: index + 1}); quoteEnd = ''; }
+    } else if (quotePairs.has(ch) && (!index || !/[a-zA-Z0-9]/u.test(text[index - 1]))) {
+      quoteStart = index; quoteEnd = quotePairs.get(ch);
+    }
+  }
+  const nouns = new Set(SETC_SENTENCE_NOUN_EXCEPTIONS_);
+  const particles = new Set(['을', '를', '은', '는', '이', '가', '의', '에', '로', '으로', '도', '만',
+    '과', '와', '에서', '에게', '처럼', '보다', '으로써', '으로서', '에도', '이라고', '이라는', '라고', '라는']);
+  const continuation = /^(?:자체|여부|정도|점|것|바|데)(?:$|은|는|이|가|을|를|의|에|도|만|으로|로)/u;
+  const words = [...text.matchAll(/[가-힣]+/gu)];
+  let quoteIndex = 0;
+  for (let index = 0; index + 1 < words.length; index++) {
+    const match = words[index], word = match[0], next = words[index + 1][0];
+    const start = match.index, end = start + word.length;
+    if (nouns.has(word) || !SETC_SENTENCE_ENDINGS_.some(suffix => word.endsWith(suffix))) continue;
+    if (start && /[a-zA-Z0-9가-힣]/u.test(text[start - 1])) continue;
+    if (!/^\s+$/u.test(text.slice(end, words[index + 1].index))) continue;
+    while (quoteIndex < quoted.length && quoted[quoteIndex].end <= start) quoteIndex++;
+    const quote = quoted[quoteIndex];
+    if ((quote && quote.start <= start && end <= quote.end) || particles.has(next) || continuation.test(next)) continue;
+    middleSpans.push(setcSpan_(text, start, end));
+  }
+  if (middleSpans.length) issues.push({
+    ruleId: 'SETC-MISSING-SEPARATOR-REVIEW',
+    reason: '문장부호 누락 의심(확인필요)', spans: middleSpans, reviewLevel: 'REVIEW'
+  });
+
+  // 본문 끝의 공백과 닫는 괄호·따옴표를 제외하고 마지막 한글 어절을 확인합니다.
+  const closing = new Set([')', ']', '}', '"', "'", '”', '’', '」', '』']);
+  let endingEnd = text.length;
+  while (endingEnd > 0 && (/\s/u.test(text[endingEnd - 1]) || closing.has(text[endingEnd - 1]))) endingEnd--;
+  let endingStart = endingEnd;
+  while (endingStart > 0 && text[endingStart - 1] >= '가' && text[endingStart - 1] <= '힣') endingStart--;
+  if (endingStart < endingEnd) issues.push({
+    ruleId: 'SETC-MISSING-FINAL-PERIOD-REVIEW',
+    reason: '문장 끝 온점 누락(확인필요)',
+    spans: [setcSpan_(text, endingStart, endingEnd)], reviewLevel: 'REVIEW'
   });
   return issues;
 }

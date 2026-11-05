@@ -29,7 +29,8 @@ test('Python reference rule IDs, reasons, review levels', () => {
     const actual = normalize(reference.map(i => [i.ruleId, i.reason, i.reviewLevel]));
     assert.deepEqual(normalize(combined.slice(0, reference.length)), normalize(reference));
     assert.ok(combined.slice(reference.length).every(i =>
-      ['SETC-JAMO-SEQUENCE-REVIEW', 'SETC-SINGLE-EOJEOL-REVIEW'].includes(i.ruleId) && i.reviewLevel === 'REVIEW'));
+      ['SETC-JAMO-SEQUENCE-REVIEW', 'SETC-SINGLE-EOJEOL-REVIEW', 'SETC-MISSING-SEPARATOR-REVIEW',
+        'SETC-MISSING-FINAL-PERIOD-REVIEW'].includes(i.ruleId) && i.reviewLevel === 'REVIEW'));
     try { assert.deepEqual(actual, item.expected); }
     catch { failures.push({text: item.text, expected: item.expected, actual}); }
   }
@@ -70,4 +71,5 @@ test('All prior unrelated functions remain byte-equivalent after newline normali
 require('./sheets.cjs')({source, test, assert, normalize});
 require('./additional-rules.cjs')({context, test, assert, normalize});
 require('./space-normalization.cjs')({context, test, assert, normalize});
+require('./punctuation-rules.cjs')({context, test, assert, normalize});
 console.log('Passed', passed, 'test groups');

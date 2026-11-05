@@ -56,6 +56,11 @@ module.exports = function ({source, test, assert, normalize}) {
       getColumn() { return this.col; }
       getLastRow() { return this.row + this.rows - 1; }
       getLastColumn() { return this.col + this.cols - 1; }
+      createFilter() {
+        if (env.failNextFilterCreation) { env.failNextFilterCreation = false; throw new Error('Filter creation failed'); }
+        if (this.sheet.filter) throw new Error('A filter already exists');
+        return this.sheet.filter = new Filter(this);
+      }
       getValues() { return this.cells().map(row => row.map(c => c.value)); }
       getValue() {
         const cell = this.cells()[0][0];
@@ -97,6 +102,13 @@ module.exports = function ({source, test, assert, normalize}) {
       setBorder() { return this; }
       setWrap() { return this; }
     }
+    class Filter {
+      constructor(range) { this.range = range; this.criteria = new Map(); }
+      getRange() { return this.range; }
+      getColumnFilterCriteria(col) { return this.criteria.get(col) || null; }
+      setColumnFilterCriteria(col, value) { this.criteria.set(col, value); return this; }
+      remove() { this.range.sheet.filter = null; }
+    }
     class Sheet {
       constructor(name, maxCols = 26) { Object.assign(this, {name, id: env.nextId++, maxCols, maxRows: 1000, grid: new Map(), widths: {}}); }
       cell(row, col) {
@@ -108,6 +120,7 @@ module.exports = function ({source, test, assert, normalize}) {
       getSheetId() { return this.id; }
       getMaxColumns() { return this.maxCols; }
       getMaxRows() { return this.maxRows; }
+      getFilter() { return this.filter || null; }
       insertColumnsAfter(_, count) { this.maxCols += count; }
       insertRowsAfter(_, count) { this.maxRows += count; }
       getRange(...args) {
@@ -513,6 +526,110 @@ module.exports = function ({source, test, assert, normalize}) {
     e.edit(s.getRange('G2'));
     assert.equal(s.getRange('G2').getValue(), '새로   입력한 내용을 보존함.');
     assert.equal(s.getRange('I2').getValue(), '재검증 필요');
+  });
+
+  test('Every generation mode filters the full A:I header and all student rows', () => {
+    for (const mode of ['selected', 'byTerm', 'integrated']) {
+      const e = environment();
+      e.attendance('1기01강좌', [[1, 20101, '학생1', true, ''], [2, 20102, '학생2', true, '']]);
+      e.context.executeCompletionTask(mode, mode === 'selected' ? '1기' : '');
+      const s = e.ss.getSheetByName(mode === 'integrated' ? '최종이수자명단' : '1기_최종이수자명단');
+      const range = s.getFilter().getRange();
+      assert.deepEqual([range.getRow(), range.getColumn(), range.getLastRow(), range.getLastColumn()], [1, 1, 3, 9]);
+      assert.ok(s.getRange('A1:I1').getValues()[0].every(Boolean));
+    }
+  });
+
+  test('Editing renders both punctuation reasons from normalized text and clears them after correction', () => {
+    const e = environment(), s = e.add('1기_최종이수자명단');
+    const input = '그렇게  됨을 판단함 추가적으로 분석함', expected = '그렇게 됨을 판단함 추가적으로 분석함';
+    s.getRange('G2').setValue(input);
+    s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), expected, 'only spaces are automatically changed');
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(expected, 'utf8'));
+    assert.equal(s.getRange('I2').getValue(),
+      '판단함: 문장부호 누락 의심(확인필요)\n분석함: 문장 끝 온점 누락(확인필요)');
+    const rich = s.getRange('G2').getRichTextValue();
+    for (let i = 0; i < expected.length; i++) {
+      const flagged = ['판단함', '분석함'].some(word => i >= expected.indexOf(word) && i < expected.indexOf(word) + word.length);
+      assert.equal(rich.styles[i].color, flagged ? '#ff0000' : '#000000');
+      assert.equal(rich.styles[i].bold, true);
+    }
+    const corrected = '그렇게 됨을 판단함. 추가적으로 분석함.';
+    s.getRange('G2').setValue(corrected);
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('I2').getValue(), '');
+    assert.ok(s.getRange('G2').getRichTextValue().styles.every(style => style.color === '#000000'));
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(corrected, 'utf8'));
+    s.getRange('G3').setValue('실험을 수행항');
+    e.edit(s.getRange('G3'));
+    assert.equal(s.getRange('I3').getValue(), '수행항: 어미 오류\n수행항: 문장 끝 온점 누락(확인필요)');
+  });
+
+  test('Batch revalidation adds missing filters and punctuation checks to existing completion records', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G2:G3').setValues([['아버지가 의사임'], ['실험 결과를 정리함.']]);
+    s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('G2').getValue(), '아버지가 의사임');
+    assert.equal(s.getRange('I2').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
+    assert.equal(s.getRange('I3').getValue(), '');
+    const range = s.getFilter().getRange();
+    assert.deepEqual([range.getRow(), range.getColumn(), range.getLastRow(), range.getLastColumn()], [1, 1, 3, 9]);
+    assert.equal(s.getRange('H2').getFormula(), '=GET_NEIS_BYTE(G2)');
+  });
+
+  test('Extending an A1 filter preserves column criteria, existing wider ranges and row values', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G2:G4').setValues([['첫째 기록'], ['둘째 기록'], ['셋째 기록']]);
+    const criterionC = {hidden: ['학생2']}, criterionH = {min: 20};
+    const original = s.getRange('A1:H2').createFilter();
+    original.setColumnFilterCriteria(3, criterionC).setColumnFilterCriteria(8, criterionH);
+    const before = JSON.stringify(s.getRange('A1:I4').getValues());
+    assert.equal(e.context.ensureCompletionFilter_(s), '');
+    const updated = s.getFilter();
+    assert.notEqual(updated, original);
+    assert.equal(updated.getRange().getLastRow(), 4);
+    assert.equal(updated.getRange().getLastColumn(), 9);
+    assert.equal(updated.getColumnFilterCriteria(3), criterionC);
+    assert.equal(updated.getColumnFilterCriteria(8), criterionH);
+    assert.equal(JSON.stringify(s.getRange('A1:I4').getValues()), before);
+    e.context.ensureCompletionFilter_(s);
+    assert.equal(s.getFilter(), updated, 'covered filter is not recreated');
+    const wider = e.add('2기_최종이수자명단');
+    wider.getRange('G2').setValue('수기 내용');
+    const wideFilter = wider.getRange('A1:J100').createFilter();
+    wideFilter.setColumnFilterCriteria(10, criterionC);
+    e.context.ensureCompletionFilter_(wider);
+    assert.equal(wider.getFilter(), wideFilter);
+    assert.equal(wider.getFilter().getColumnFilterCriteria(10), criterionC);
+  });
+
+  test('Unrelated existing filter is retained and reported while punctuation validation still runs', () => {
+    const e = environment(), s = e.add('1기_최종이수자명단');
+    s.getRange('G2').setValue('내용을 정리함');
+    const existing = s.getRange('B4:D10').createFilter();
+    const criterion = {hidden: ['값']}; existing.setColumnFilterCriteria(2, criterion);
+    e.context.revalidateAllSetc();
+    assert.equal(s.getFilter(), existing);
+    assert.equal(existing.getColumnFilterCriteria(2), criterion);
+    assert.match(e.alerts.at(-1), /필터 확인:[\s\S]*A1에서 시작하지 않아/);
+    assert.equal(s.getRange('I2').getValue(), '정리함: 문장 끝 온점 누락(확인필요)');
+  });
+
+  test('Failed filter expansion restores the previous range and criteria', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G3').setValue('수기 내용');
+    const criterion = {hidden: ['값']};
+    s.getRange('A1:H2').createFilter().setColumnFilterCriteria(2, criterion);
+    e.failNextFilterCreation = true;
+    assert.throws(() => e.context.ensureCompletionFilter_(s), /Filter creation failed/);
+    const restored = s.getFilter();
+    assert.equal(restored.getRange().getLastColumn(), 8);
+    assert.equal(restored.getRange().getLastRow(), 2);
+    assert.equal(restored.getColumnFilterCriteria(2), criterion);
+    assert.equal(s.getRange('G3').getValue(), '수기 내용');
   });
 
   test('Menu retains existing entry points and modal has three generation modes', () => {
