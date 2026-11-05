@@ -1,4 +1,7 @@
 
+// 전체 코드 확인본: 2026-11-05.2 (온점 검사·헤더 필터 포함)
+var SETC_BUILD_ID_ = '2026-11-05.2';
+
 /**
  * =========================================================
  * [신규 추가] 상단 메뉴 및 팝업창 연동 코드 (HTML 통합 버전)
@@ -15,6 +18,7 @@ function onOpen() {
     .addItem('📁 기수별 최종 이수자 명단 생성', 'createFinalCompletionListsByTerm')
     .addSeparator()
     .addItem('🔎 세특 전체 재검증 (이어서 처리)', 'revalidateAllSetc')
+    .addItem('🧪 온점 검사 작동 확인', 'showSetcValidationStatus')
     .addToUi();
 }
 
@@ -1542,6 +1546,8 @@ function formatSetcIssues_(issues) {
 /** 한 번에 최대 200행. 큰 명단은 같은 메뉴를 다시 누르면 저장한 다음 행부터 계속합니다. */
 function revalidateAllSetc() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const status = checkSetcRuntime_();
+  if (!status.ok) { SpreadsheetApp.getUi().alert(formatSetcRuntimeStatus_(status)); return; }
   const lock = LockService.getDocumentLock();
   if (!lock || !lock.tryLock(10000)) { SpreadsheetApp.getUi().alert('다른 작업이 진행 중입니다. 잠시 후 다시 실행해주세요.'); return; }
   let message;
@@ -1576,7 +1582,7 @@ function revalidateAllSetc() {
       if (pending) break;
     }
     if (!pending) props.deleteProperty(SETC_CURSOR_KEY_);
-    message = '세특 재검증: ' + count + '행 처리\n' + (pending ? '남은 행이 있습니다. 같은 메뉴를 다시 눌러 이어서 처리해주세요.' : '현재 검사 범위 처리가 끝났습니다.');
+    message = '세특 재검증 [온점 검사 포함 / ' + SETC_BUILD_ID_ + ']: ' + count + '행 처리\n' + (pending ? '남은 행이 있습니다. 같은 메뉴를 다시 눌러 이어서 처리해주세요.' : '현재 검사 범위 처리가 끝났습니다.');
     if (!sheets.length) message = '검사할 이수자 명단이 없습니다.';
     if (failed.length) message += '\n처리 실패(자료 유지):\n' + failed.join('\n');
     if (filterNotices.length) message += '\n필터 확인:\n' + filterNotices.join('\n');
@@ -1916,6 +1922,35 @@ function checkSetcPunctuationRules_(text) {
     spans: [setcSpan_(text, endingStart, endingEnd)], reviewLevel: 'REVIEW'
   });
   return issues;
+}
+
+/** 현재 실행 중인 규칙으로 사용자 보고 문장을 검사해 누락·중복 코드의 영향을 확인합니다. */
+function checkSetcRuntime_() {
+  const cases = [
+    {text: '~함 판단함 그리고', middle: '판단함', ending: '그리고'},
+    {text: '창업하기를 판단함을 기록하고 최선을 다함 기기 사용에 앞장섬', middle: '다함', ending: '앞장섬'}
+  ];
+  try {
+    const results = cases.map(sample => {
+      const issues = checkSetcLocalRules(sample.text);
+      const has = (id, word) => issues.some(issue => issue.ruleId === id && issue.spans.some(span => span.label === word));
+      return {text: sample.text,
+        middle: has('SETC-MISSING-SEPARATOR-REVIEW', sample.middle),
+        ending: has('SETC-MISSING-FINAL-PERIOD-REVIEW', sample.ending)};
+    });
+    return {version: SETC_BUILD_ID_, ok: results.every(result => result.middle && result.ending), results: results};
+  } catch (error) { return {version: SETC_BUILD_ID_, ok: false, results: [], error: error.message}; }
+}
+
+function formatSetcRuntimeStatus_(status) {
+  return '온점 검사 작동 확인 [' + status.version + ']\n' + (status.ok
+    ? '문장 중간 누락 의심: 정상\n문장 끝 온점 누락: 정상\n확인용 두 문장 모두 검출했습니다.'
+    : '온점 검사 확인에 실패했습니다.\n전체 코드를 다시 교체·저장하고, 같은 함수가 들어 있는 예전 코드 파일이 중복으로 남아 있는지 확인해주세요.'
+      + (status.error ? '\n오류: ' + status.error : ''));
+}
+
+function showSetcValidationStatus() {
+  SpreadsheetApp.getUi().alert(formatSetcRuntimeStatus_(checkSetcRuntime_()));
 }
 
 // BEGIN GENERATED SETC RULE DATA

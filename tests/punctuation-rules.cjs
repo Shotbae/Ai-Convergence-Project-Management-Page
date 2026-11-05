@@ -4,6 +4,17 @@ module.exports = function ({context, test, assert, normalize}) {
   const middle = text => spans(text, 'SETC-MISSING-SEPARATOR-REVIEW');
   const ending = text => spans(text, 'SETC-MISSING-FINAL-PERIOD-REVIEW');
 
+  test('Runtime check validates both reported screenshot sentences with missing middle and final punctuation', () => {
+    const report = normalize(context.checkSetcRuntime_());
+    assert.equal(report.version, '2026-11-05.2');
+    assert.equal(report.ok, true);
+    assert.equal(report.results.length, 2);
+    assert.ok(report.results.every(result => result.middle && result.ending));
+    const text = '창업하기를 판단함을 기록하고 최선을 다함 기기 사용에 앞장섬';
+    assert.deepEqual(middle(text).map(s => s.label), ['다함']);
+    assert.deepEqual(ending(text).map(s => s.label), ['앞장섬']);
+  });
+
   test('Ending candidates before another word produce review; attached particles remain part of their word', () => {
     const cases = [
       ['그렇게 됨을 판단함 추가적으로 실험함.', ['판단함']],

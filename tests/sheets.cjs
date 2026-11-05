@@ -632,10 +632,51 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('G3').getValue(), '수기 내용');
   });
 
+  test('Reported screenshot sentences render both missing punctuation reasons on edit and batch revalidation', () => {
+    for (const action of ['edit', 'batch']) {
+      const e = environment(), s = e.add('2기_최종이수자명단');
+      e.context.ensureSetcColumn_(s);
+      const first = '~함 판단함 그리고 ';
+      const second = '창업하기를 판단함을 기록하고 최선을 다함 기기 사용에 앞장섬';
+      s.getRange('G2:G3').setValues([[first], [second]]);
+      s.getRange('H2:H3').setValues([['=GET_NEIS_BYTE(G2)'], ['=GET_NEIS_BYTE(G3)']]);
+      s.getRange('I2').setValue('~: 금지기호 사용(수정필요)\n그리고: 어미 오류');
+      if (action === 'edit') e.edit(s.getRange('G2:G3'));
+      else e.context.revalidateAllSetc();
+      assert.equal(s.getRange('I2').getValue(), '~: 금지기호 사용(수정필요)\n그리고: 어미 오류\n'
+        + '판단함: 문장부호 누락 의심(확인필요)\n그리고: 문장 끝 온점 누락(확인필요)');
+      assert.equal(s.getRange('I3').getValue(), '다함: 문장부호 누락 의심(확인필요)\n앞장섬: 문장 끝 온점 누락(확인필요)');
+      assert.equal(s.getRange('G2').getValue(), first);
+      assert.equal(s.getRange('G3').getValue(), second);
+      assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(first, 'utf8'));
+      assert.equal(s.getRange('H3').getValue(), Buffer.byteLength(second, 'utf8'));
+      const rich = s.getRange('G3').getRichTextValue();
+      for (const word of ['다함', '앞장섬']) {
+        assert.ok(rich.styles.slice(second.indexOf(word), second.indexOf(word) + word.length).every(style => style.color === '#ff0000'));
+      }
+      assert.ok(rich.styles.slice(second.indexOf('판단함을'), second.indexOf('판단함을') + 4).every(style => style.color === '#000000'));
+      if (action === 'batch') assert.match(e.alerts.at(-1), /온점 검사 포함 \/ 2026-11-05\.2/);
+    }
+  });
+
+  test('On-sheet runtime status reports success and blocks batch writes when old rules override the checker', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G2').setValue('이전 내용을 보존함');
+    e.context.showSetcValidationStatus();
+    assert.match(e.alerts.at(-1), /2026-11-05\.2[\s\S]*문장 중간 누락 의심: 정상[\s\S]*문장 끝 온점 누락: 정상/);
+    const before = JSON.stringify([...s.grid]);
+    e.context.checkSetcLocalRules = text => e.context.checkSetcReferenceRules_(text);
+    assert.equal(e.context.checkSetcRuntime_().ok, false);
+    e.context.revalidateAllSetc();
+    assert.match(e.alerts.at(-1), /온점 검사 확인에 실패/);
+    assert.equal(JSON.stringify([...s.grid]), before);
+    assert.equal(s.getFilter(), null);
+  });
+
   test('Menu retains existing entry points and modal has three generation modes', () => {
     const e = environment(); e.context.onOpen(); e.context.openCompletionModal();
     const names = e.menus[0].items.map(i => i.fn);
-    for (const name of ['openAdminModal', 'promptAbsenteeCheck', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'openCompletionModal', 'revalidateAllSetc']) assert.ok(names.includes(name));
+    for (const name of ['openAdminModal', 'promptAbsenteeCheck', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'openCompletionModal', 'revalidateAllSetc', 'showSetcValidationStatus']) assert.ok(names.includes(name));
     for (const mode of ['selected', 'byTerm', 'integrated']) assert.ok(e.modal.html.includes('value="' + mode + '"'));
     assert.ok(e.modal.html.includes('new Option'));
   });

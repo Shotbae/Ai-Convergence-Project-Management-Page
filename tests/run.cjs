@@ -72,4 +72,5 @@ require('./sheets.cjs')({source, test, assert, normalize});
 require('./additional-rules.cjs')({context, test, assert, normalize});
 require('./space-normalization.cjs')({context, test, assert, normalize});
 require('./punctuation-rules.cjs')({context, test, assert, normalize});
+require('./release-artifact.cjs')({context, test, assert});
 console.log('Passed', passed, 'test groups');
