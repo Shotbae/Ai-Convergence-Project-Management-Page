@@ -61,7 +61,7 @@ test('All prior unrelated functions remain byte-equivalent after newline normali
     'show', 'af58fe2:aiconvpromanage.gs'], {cwd: root, encoding: 'utf8'});
   const baseline = vm.createContext({});
   vm.runInContext(old, baseline);
-  const changed = new Set(['onOpen', 'createFinalCompletionList', 'createFinalCompletionListsByTerm']);
+  const changed = new Set(['onOpen', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'createAbsenteeList']);
   for (const name of Object.keys(baseline).filter(n => typeof baseline[n] === 'function' && !changed.has(n))) {
     assert.equal(context[name].toString().replaceAll('\r\n', '\n'), baseline[name].toString().replaceAll('\r\n', '\n'), name);
   }

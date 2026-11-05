@@ -559,11 +559,41 @@ function getCleanAttendanceStudentName(name) {
   return String(name).replace(/\(대기\)|\(중복\)/g, "").trim();
 }
 
+// F7의 기존 비고·서명 제목을 3일차로 오인하지 않도록 날짜 또는 명시적 차시 표기만 인식합니다.
+function isThirdAttendanceDayHeader_(value) {
+  if (Object.prototype.toString.call(value) === '[object Date]') return Number.isFinite(value.getTime());
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (/^3\s*(?:일\s*차|차시)(?:$|[\s:：(])/.test(text)) return true;
+  const dateText = text.replace(/\s+/g, '').replace(/\([월화수목금토일](?:요일)?\)$/, '');
+  const match = /^(?:(\d{2}|\d{4})[./-])?(\d{1,2})[./-](\d{1,2})\.?$/.exec(dateText)
+    || /^(?:(\d{2}|\d{4})년)?(\d{1,2})월(\d{1,2})일$/.exec(dateText);
+  return !!match && Number(match[2]) >= 1 && Number(match[2]) <= 12
+    && Number(match[3]) >= 1 && Number(match[3]) <= 31;
+}
+
+/** 1·2일 강좌의 기존 E7 기준을 유지하고, 명시된 F7이 있으면 3일 강좌로 판단합니다. */
+function getAttendanceDayCount_(sheet) {
+  const headers = sheet.getRange('E7:F7').getValues()[0];
+  const hasSecondDay = headers[0] !== '' && headers[0] !== null;
+  if (isThirdAttendanceDayHeader_(headers[1])) {
+    if (!hasSecondDay) throw new Error('[' + sheet.getName() + '] 3일차(F7)가 있지만 2일차(E7)가 비어 있습니다. 날짜를 확인해주세요.');
+    return 3;
+  }
+  return hasSecondDay ? 2 : 1;
+}
+
+/** 이수와 결석 판정이 같은 출결 기준을 사용합니다. 실제 체크값 true만 출석으로 셉니다. */
+function getAttendanceStatus_(row, dayCount) {
+  const checks = Array.from({length: dayCount}, (_, day) => row[3 + day] === true);
+  return {complete: checks.every(Boolean), hasAttendance: checks.some(Boolean)};
+}
+
 // 사용자가 선택한 기수까지의 출석부를 읽어 결석 이력을 통합합니다.
 // 숨김 여부는 사용하지 않습니다. 예: 2기를 선택하면 1기~2기 출석부만 검사하고 3기 이후는 제외합니다.
 // 규칙:
 // 1) 이름에 (대기)가 있고 해당 강좌의 출석 체크가 하나도 없으면 단순 대기자로 보고 제외
-// 2) 그 외 학생은 1일 강좌에서 D열 미체크, 2일 강좌에서 D/E 중 하나라도 미체크면 결석 이력으로 기록
+// 2) 그 외 학생은 강좌 일수(1~3일)에 해당하는 D/E/F 중 하나라도 미체크면 결석 이력으로 기록
 // 3) 같은 기수에서 여러 강좌를 결석해도 결석자명단에는 학생당 1회만 기록하고, 결석 강좌명은 한 셀에 함께 표시
 function createAbsenteeList(upToTerm) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -608,13 +638,12 @@ function createAbsenteeList(upToTerm) {
     if (!term) return;
 
     const courseName = String(sheet.getRange("B3").getValue()).trim();
-    const date2 = sheet.getRange("E7").getValue();
-    const isTwoDays = (date2 !== "" && date2 !== null);
+    const dayCount = getAttendanceDayCount_(sheet);
 
     const lastRow = sheet.getLastRow();
     if (lastRow < 8) return;
 
-    const data = sheet.getRange(8, 1, lastRow - 7, 5).getValues();
+    const data = sheet.getRange(8, 1, lastRow - 7, 3 + dayCount).getValues();
 
     data.forEach(row => {
       const studentId = row[1];
@@ -623,23 +652,14 @@ function createAbsenteeList(upToTerm) {
       if (!studentId || String(studentId).trim() === "") return;
       if (!rawName || String(rawName).trim() === "") return;
 
-      const check1 = row[3] === true;
-      const check2 = row[4] === true;
+      const attendance = getAttendanceStatus_(row, dayCount);
       const isWaiting = String(rawName).includes("(대기)");
 
-      const noAttendanceAtAll = isTwoDays
-        ? (!check1 && !check2)
-        : !check1;
-
       // 이름에 (대기)가 있고 실제 출석이 한 번도 없으면 단순 대기자이므로 결석 제외
-      if (isWaiting && noAttendanceAtAll) return;
+      if (isWaiting && !attendance.hasAttendance) return;
 
       // 일반 학생의 결석 판정
-      const isAbsent = isTwoDays
-        ? (!check1 || !check2)
-        : !check1;
-
-      if (!isAbsent) return;
+      if (attendance.complete) return;
 
       const cleanName = getCleanAttendanceStudentName(rawName);
       const key = term + "|" + String(studentId).trim() + "|" + cleanName;
@@ -1299,12 +1319,12 @@ function generateCompletionLists_(mode, term) {
       if (ss.getSheetByName(key)) return;
       const course = sheet.getRange('B3').getValue();
       const teacher = sheet.getRange('B5').getValue();
-      const twoDays = sheet.getRange('E7').getValue() !== '';
+      const dayCount = getAttendanceDayCount_(sheet);
       const last = sheet.getLastRow();
       if (last < 8) return;
-      sheet.getRange(8, 1, last - 7, 5).getValues().forEach(row => {
+      sheet.getRange(8, 1, last - 7, 3 + dayCount).getValues().forEach(row => {
         if (!row[1] || String(row[1]).trim() === '') return;
-        if (!(row[3] === true && (!twoDays || row[4] === true))) return;
+        if (!getAttendanceStatus_(row, dayCount).complete) return;
         groups.get(key).push([row[1], getCleanAttendanceStudentName(row[2]),
           getAttendanceTermFromSheetName(sheet.getName()), course, teacher]);
       });

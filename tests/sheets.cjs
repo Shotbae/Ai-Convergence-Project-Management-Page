@@ -190,6 +190,99 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('G2').getValue(), '');
   });
 
+  test('Three-day completion requires every boolean check in all generation modes and terms', () => {
+    const e = environment();
+    const rows = Array.from({length: 8}, (_, mask) => [mask + 1, 21000 + mask, '학생' + mask,
+      !!(mask & 4), !!(mask & 2), !!(mask & 1)]);
+    rows.push([9, 21008, '빈칸', true, true, ''], [10, 21009, '문자', true, true, 'TRUE'],
+      [11, 21010, '숫자', true, true, 1]);
+    const s2 = e.add('2기01세차시강좌');
+    s2.getRange('B3:B5').setValues([['세차시강좌'], ['11/1&11/2&11/7'], ['담당교사']]);
+    s2.getRange('D7:F7').setValues([['11/1', '11/2', '11/7']]);
+    s2.getRange(8, 1, rows.length, 6).setValues(rows);
+    const s11 = e.add('11기02다른강좌');
+    s11.getRange('B3').setValue('다른강좌');
+    s11.getRange('E7:F7').setValues([['12/1', '3일차']]);
+    s11.getRange('A8:F9').setValues([[1, 21101, '다른학생', true, true, true], [2, 21102, '결석학생', true, true, false]]);
+    const before = JSON.stringify(s2.getRange('A1:F20').getValues());
+    e.context.executeCompletionTask('selected', '2기');
+    assert.deepEqual(e.ss.getSheetByName('2기_최종이수자명단').getRange('B2:D2').getValues(), [[21007, '학생7', '2기']]);
+    assert.equal(e.ss.getSheetByName('2기_최종이수자명단').getLastRow(), 2);
+    assert.equal(e.ss.getSheetByName('11기_최종이수자명단'), null);
+    e.context.executeCompletionTask('byTerm', '');
+    assert.deepEqual(e.ss.getSheetByName('11기_최종이수자명단').getRange('B2:D2').getValues(), [[21101, '다른학생', '11기']]);
+    e.context.executeCompletionTask('integrated', '');
+    assert.deepEqual(e.ss.getSheetByName('최종이수자명단').getRange('B2:D3').getValues(),
+      [[21007, '학생7', '2기'], [21101, '다른학생', '11기']]);
+    assert.equal(JSON.stringify(s2.getRange('A1:F20').getValues()), before, 'attendance source is read-only');
+  });
+
+  test('Legacy one/two-day attendance ignores notes and unused third-column checks', () => {
+    const e = environment();
+    const one = e.attendance('1기01하루', [[1, 20101, '하루학생', true, false], [2, 20102, '하루결석', false, true]]);
+    one.getRange('F7:F9').setValues([['비고'], [false], [true]]);
+    const two = e.attendance('1기02이틀', [[1, 20103, '이틀학생', true, true], [2, 20104, '이틀결석', true, false]], true);
+    two.getRange('F7:F9').setValues([['서명'], [false], [true]]);
+    e.context.executeCompletionTask('selected', '1기');
+    assert.deepEqual(e.ss.getSheetByName('1기_최종이수자명단').getRange('B2:C3').getValues(),
+      [[20101, '하루학생'], [20103, '이틀학생']]);
+    e.context.createAbsenteeList('1기');
+    assert.deepEqual(e.ss.getSheetByName('결석자명단').getRange('B2:C3').getValues(),
+      [[20102, '하루결석'], [20104, '이틀결석']]);
+  });
+
+  test('Three-day headers accept dates and labels; a missing second header stops before changing output', () => {
+    const e = environment(), s = e.attendance('4기01강좌', [[1, 20101, '학생', true, true]], true);
+    const thirdHeaders = [new Date('2026-11-05T00:00:00Z'), '11/5', '2026-11-05', '26.11.5.', '11.5.',
+      '11월 5일', '2026년 11월 5일', '11/5 (목)', '11/5(목요일)', '3일차', '3일차\n11/5', '3차시: 11/5'];
+    for (const header of thirdHeaders) {
+      s.getRange('F7').setValue(header);
+      assert.equal(e.context.getAttendanceDayCount_(s), 3, String(header));
+    }
+    for (const header of ['', '비고', '서명', '확인', '비고(11/5)', '내부 메모', true, 123]) {
+      s.getRange('F7').setValue(header);
+      assert.equal(e.context.getAttendanceDayCount_(s), 2, String(header));
+    }
+    s.getRange('F7').setValue('3일차');
+    s.getRange('E7').clearContent();
+    const oldAbsence = e.add('결석자명단');
+    oldAbsence.getRange('A1').setValue('기존 자료');
+    assert.throws(() => e.context.executeCompletionTask('selected', '4기'), /2일차\(E7\).*비어/);
+    assert.equal(e.ss.getSheetByName('4기_최종이수자명단'), null);
+    assert.throws(() => e.context.createAbsenteeList('4기'), /2일차\(E7\).*비어/);
+    assert.equal(oldAbsence.getRange('A1').getValue(), '기존 자료');
+    assert.equal(e.lock.held, false);
+  });
+
+  test('Three-day absences agree with completion and count a waiting student attending only the third day', () => {
+    const e = environment(), s = e.add('2기01강좌');
+    s.getRange('B3').setValue('세차시강좌');
+    s.getRange('D7:F7').setValues([['11/1', '11/2', '11/7']]);
+    const rows = [
+      [1, 22001, '전일출석', true, true, true],
+      [2, 22002, '셋째날결석', true, true, false],
+      [3, 22003, '둘째날결석', true, false, true],
+      [4, 22004, '첫째날결석', false, true, true],
+      [5, 22005, '전일결석', false, false, false],
+      [6, 22006, '미참여대기(대기)', false, false, false],
+      [7, 22007, '셋째날만출석(대기)', false, false, true],
+      [8, 22008, '전일출석대기(대기)(중복)', true, true, true],
+      [9, 22009, '셋째날결석대기(대기)', true, true, false]
+    ];
+    s.getRange(8, 1, rows.length, 6).setValues(rows);
+    e.attendance('3기01미래강좌', [[1, 23001, '다음기수학생', false, '']]);
+    e.context.executeCompletionTask('selected', '2기');
+    assert.deepEqual(e.ss.getSheetByName('2기_최종이수자명단').getRange('B2:C3').getValues(),
+      [[22001, '전일출석'], [22008, '전일출석대기']]);
+    e.context.createAbsenteeList('2기');
+    assert.deepEqual(e.ss.getSheetByName('결석자명단').getRange('A2:D7').getValues(), [
+      ['2기', 22002, '셋째날결석', '세차시강좌'], ['2기', 22003, '둘째날결석', '세차시강좌'],
+      ['2기', 22004, '첫째날결석', '세차시강좌'], ['2기', 22005, '전일결석', '세차시강좌'],
+      ['2기', 22007, '셋째날만출석', '세차시강좌'], ['2기', 22009, '셋째날결석대기', '세차시강좌']
+    ]);
+    assert.equal(e.ss.getSheetByName('결석자명단').getLastRow(), 7);
+  });
+
   test('Existing term and integrated lists retain handwritten text, formulas and rows', () => {
     const e = environment();
     e.attendance('1기01강좌', [[1, 20101, '학생', true, false]]);
