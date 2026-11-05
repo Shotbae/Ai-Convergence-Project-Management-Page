@@ -326,6 +326,28 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('I3').getValue(), '한 번 더: 한 글자 어절 연속 사용(확인필요)');
   });
 
+  test('Reported five-space sentence becomes 26 bytes with only the ending reason on edit and revalidation', () => {
+    for (const name of ['최종이수자명단', '1기_최종이수자명단']) {
+      for (const action of ['edit', 'batch']) {
+        const e = environment(), s = e.add(name);
+        e.context.ensureSetcColumn_(s);
+        s.getRange('G2').setValue('아버지가     법관이다.');
+        s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+        s.getRange('I2').setValue('연속 공백 5칸: 연속 공백 사용\n법관이다: 어미 오류');
+        assert.equal(s.getRange('H2').getValue(), 30);
+        if (action === 'edit') e.edit(s.getRange('G2'));
+        else e.context.revalidateAllSetc();
+        assert.equal(s.getRange('G2').getValue(), '아버지가 법관이다.', name + ' / ' + action);
+        assert.equal(s.getRange('H2').getValue(), 26);
+        assert.equal(s.getRange('I2').getValue(), '법관이다: 어미 오류');
+        const rich = s.getRange('G2').getRichTextValue();
+        assert.ok(rich.styles.slice(0, 5).every(style => style.color === '#000000'));
+        assert.ok(rich.styles.slice(5, 9).every(style => style.color === '#ff0000'));
+        assert.equal(rich.styles[9].color, '#000000');
+      }
+    }
+  });
+
   test('Edit collapses ASCII spaces before checking, recalculates bytes and keeps line breaks', () => {
     const e = environment(), s = e.add('최종이수자명단');
     const input = '유튜브  영상을 정리함.\n특허   원리를 탐구함.';
