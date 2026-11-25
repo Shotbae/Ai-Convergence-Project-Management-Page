@@ -56,6 +56,23 @@ module.exports = function ({source, test, assert, normalize}) {
       getColumn() { return this.col; }
       getLastRow() { return this.row + this.rows - 1; }
       getLastColumn() { return this.col + this.cols - 1; }
+      sort(spec) {
+        const specs = (Array.isArray(spec) ? spec : [spec]).map(item => typeof item === 'number' ? {column: item, ascending: true} : item);
+        const rows = this.cells().slice().sort((a, b) => {
+          for (const item of specs) {
+            const left = a[item.column - this.col].value, right = b[item.column - this.col].value;
+            let cmp;
+            if (typeof left === 'number' && typeof right === 'number') cmp = left - right;
+            else if (typeof left === 'number') cmp = -1;
+            else if (typeof right === 'number') cmp = 1;
+            else cmp = String(left).localeCompare(String(right));
+            if (cmp) return item.ascending === false ? -cmp : cmp;
+          }
+          return 0;
+        });
+        rows.forEach((cells, row) => cells.forEach((cell, col) => this.sheet.grid.set((this.row + row) + ',' + (this.col + col), cell)));
+        return this;
+      }
       createFilter() {
         if (env.failNextFilterCreation) { env.failNextFilterCreation = false; throw new Error('Filter creation failed'); }
         if (this.sheet.filter) throw new Error('A filter already exists');
@@ -64,6 +81,10 @@ module.exports = function ({source, test, assert, normalize}) {
       getValues() { return this.cells().map(row => row.map(c => c.value)); }
       getValue() {
         const cell = this.cells()[0][0];
+        if (cell.formula === env.context.getCompletionByteFormula_()) {
+          const text = this.sheet.cell(this.row, 7).value;
+          return text === '' ? '' : env.context.GET_NEIS_BYTE(text);
+        }
         const byteFormula = /^=GET_NEIS_BYTE\(G(\d+)\)$/.exec(cell.formula);
         const conditionalByteFormula = /^=IF\(G(\d+)="","",GET_NEIS_BYTE\(G\1\)\)$/.exec(cell.formula);
         const match = byteFormula || conditionalByteFormula;
@@ -120,6 +141,17 @@ module.exports = function ({source, test, assert, normalize}) {
       getSheetId() { return this.id; }
       getMaxColumns() { return this.maxCols; }
       getMaxRows() { return this.maxRows; }
+      getFrozenRows() { return this.frozenRows || 0; }
+      setFrozenRows(count) { this.frozenRows = count; }
+      moveRows(range, destination) {
+        assert.equal(range.rows, 1); assert.equal(destination, 1);
+        const source = range.getRow();
+        this.grid = new Map([...this.grid].map(([key, cell]) => {
+          const [row, col] = key.split(',').map(Number);
+          const moved = row === source ? 1 : row < source ? row + 1 : row;
+          return [moved + ',' + col, cell];
+        }));
+      }
       getFilter() { return this.filter || null; }
       insertColumnsAfter(_, count) { this.maxCols += count; }
       insertRowsAfter(_, count) { this.maxRows += count; }
@@ -197,7 +229,7 @@ module.exports = function ({source, test, assert, normalize}) {
     e.context.createFinalCompletionListsByTerm('1기');
     const s = e.ss.getSheetByName('1기_최종이수자명단');
     assert.deepEqual(s.getRange('B2:C4').getValues(), [[20101, '학생1'], [20102, '학생2'], [20103, '학생3']]);
-    assert.equal(s.getRange('H2').getFormula(), '=IF(G2="","",GET_NEIS_BYTE(G2))');
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
     assert.equal(s.getRange('I1').getValue(), '오류 사유');
     assert.equal(s.getRange('I1').getNote(), '세특 자동 검증 결과입니다. 빨간 표현과 오류 사유를 확인하고 교사가 판단해주세요.');
     assert.equal(s.getRange('G2').getValue(), '');
@@ -477,7 +509,7 @@ module.exports = function ({source, test, assert, normalize}) {
     s.getRange('G2').setValue(text); s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
     e.edit(s.getRange('G2'));
     assert.equal(s.getRange('G2').getValue(), text);
-    assert.equal(s.getRange('H2').getFormula(), '=GET_NEIS_BYTE(G2)');
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
     assert.equal(s.getRange('I2').getValue(), '😀: 특수기호 사용(확인필요)\n유튜브: 사기업 명칭 (영상/스트리밍)'.split('\n').reverse().join('\n'));
     const rich = s.getRange('G2').getRichTextValue();
     assert.equal(rich.styles[text.indexOf('유튜브')].color, '#ff0000');
@@ -515,24 +547,23 @@ module.exports = function ({source, test, assert, normalize}) {
         [1, 20102, '학생2', '5기', '강좌2', '교사', 'AI 모델을 활용함.', '=GET_NEIS_BYTE(G2)'],
         [2, 20101, '학생1', '4기', '강좌1', '교사', '유튜브 영상을 분석함.', '=GET_NEIS_BYTE(G3)']]);
       s.getRange('I2:I3').setValues([['유튜브: 사기업 명칭 (영상/스트리밍)'], ['특허: 지식재산권 관련 표현 확인 필요']]);
-      const before = JSON.stringify(s.getRange('A2:H3').getValues());
+      const before = JSON.stringify(s.getRange('A2:G3').getValues());
       if (action === 'edit') e.edit(s.getRange('G2:G3'));
       else e.context.revalidateAllSetc();
       assert.equal(s.getRange('I2').getValue(), '', action);
       assert.equal(s.getRange('I3').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)', action);
       assert.equal(s.getRange('I1').getNote(), e.context.SETC_COLUMN_MARKER_);
-      assert.equal(JSON.stringify(s.getRange('A2:H3').getValues()), before);
+      assert.equal(JSON.stringify(s.getRange('A2:G3').getValues()), before);
+      assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
       assert.equal(e.toasts.length, 0);
     }
   });
 
-  test('I1 marker recovery refuses mixed user notes, values, formulas and changed headers', () => {
+  test('Unregistered I columns protect unknown notes, numeric values and formulas', () => {
     const cases = [
       {title: '오류 사유', values: ['유튜브: 사기업 명칭 (영상/스트리밍)', '교사가 적은 메모']},
       {title: '오류 사유', values: ['수행항: 어미 오류', 42]},
-      {title: '오류 사유', values: ['수행항: 어미 오류', '=1+1']},
-      {title: '', values: ['수행항: 어미 오류', '']},
-      {title: '교사 메모', values: ['수행항: 어미 오류', '']}
+      {title: '오류 사유', values: ['수행항: 어미 오류', '=1+1']}
     ];
     for (const sample of cases) {
       const e = environment(), s = e.add('최종이수자명단');
@@ -572,7 +603,7 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('G2').getValue(), '유튜브 영상을 분석함.');
   });
 
-  test('Normal data-row sorting keeps the I1 marker and batch revalidation updates reasons for current G values', () => {
+  test('Batch revalidation refreshes stale reasons when G values change independently', () => {
     const e = environment(), s = e.add('최종이수자명단');
     e.context.ensureSetcColumn_(s);
     s.getRange('G2:G3').setValues([['특허 원리를 정리함.'], ['유튜브 영상을 분석함.']]);
@@ -597,6 +628,171 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.match(s.getRange('I2').getValue(), /수식 셀/);
   });
 
+  function filledCompletion(e, name = '4기+5기_통합이수자명단') {
+    const s = e.add(name);
+    e.context.writeCompletionList_(s, [
+      [20103, '학생3', '4기', '강좌나', '교사다'],
+      [20101, '학생1', '4기', '강좌가', '교사나'],
+      [20104, '학생4', '5기', '강좌라', '교사가'],
+      [20101, '학생1', '5기', '강좌다', '교사라']]);
+    [3, 1, 4, 2].forEach((sequence, index) => {
+      const row = index + 2, text = '기록' + sequence + '  유튜브 영상을 분석함.';
+      s.getRange(row, 1).setValue(sequence);
+      s.getRange(row, 7).setRichTextValue(new Rich(text,
+        Array.from({length: text.length}, (_, i) => ({bold: i % 2 === 0, italic: i % 3 === 0, color: '#ff0000'})),
+        Array.from({length: text.length}, (_, i) => i < 4 ? 'https://example.com/' + sequence : null)));
+      s.getRange(row, 9).setRichTextValue(new Rich('유튜브: 사기업 명칭 (영상/스트리밍)'));
+      s.getRange(row, 7).setNote('교사 메모 ' + sequence);
+      s.getRange(row, 10).setValue('옆 열 자료 ' + sequence);
+    });
+    return s;
+  }
+
+  function recordSnapshot(s, start = 2) {
+    return s.getRange(start, 1, s.getLastRow() - start + 1, 10).getValues().map((values, index) => {
+      const row = start + index, g = s.getRange(row, 7), i = s.getRange(row, 9);
+      return {key: JSON.stringify([values[1], values[3], values[4]]),
+        values: [...values.slice(0, 7), ...values.slice(8)],
+        styles: g.getRichTextValue().styles, links: g.getRichTextValue().links, note: g.getNote(),
+        outputStyles: i.getRichTextValue() && i.getRichTextValue().styles};
+    }).sort((a, b) => a.key.localeCompare(b.key));
+  }
+
+  test('One-time setup preserves existing text, styles, links, reasons and extra columns; upgrades only owned H formulas', () => {
+    const e = environment(), s = filledCompletion(e);
+    s.getRange('H2:H5').setValues([['=GET_NEIS_BYTE($G$2)'], ['=IF(G3="","",GET_NEIS_BYTE(G3))'], [123], ['=LEN(G5)']]);
+    s.getRange('I1').setValue('검토 메모').setNote('내 제목 메모');
+    const source = e.attendance('4기01강좌', [[1, 20101, '원본학생', true, false]]);
+    const sourceBefore = JSON.stringify(source.getRange('A1:J9').getValues());
+    const before = recordSnapshot(s), existingFilter = s.getFilter();
+    const criterion = {hidden: ['교사가']}; existingFilter.setColumnFilterCriteria(6, criterion);
+    e.props.set(e.context.SETC_CURSOR_KEY_, JSON.stringify({sheetId: s.id, row: 5}));
+    e.context.prepareCompletionSheets();
+    assert.deepEqual(recordSnapshot(s), before);
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
+    assert.equal(s.getRange('H3').getFormula(), e.context.getCompletionByteFormula_());
+    assert.equal(s.getRange('H4').getValue(), 123);
+    assert.equal(s.getRange('H5').getFormula(), '=LEN(G5)');
+    assert.equal(s.getRange('I1').getValue(), '검토 메모');
+    assert.equal(s.getRange('I1').getNote(), '내 제목 메모');
+    assert.equal(s.getFrozenRows(), 1);
+    assert.equal(s.getFilter(), existingFilter);
+    assert.equal(s.getFilter().getColumnFilterCriteria(6), criterion);
+    assert.equal(e.props.get(e.context.SETC_FIXED_COLUMNS_KEY_ + s.id), 'G7:H8:I9');
+    assert.equal(e.props.has(e.context.SETC_CURSOR_KEY_), false);
+    assert.equal(JSON.stringify(source.getRange('A1:J9').getValues()), sourceBefore);
+    assert.match(e.alerts.at(-1), /1개 시트 처리/);
+    assert.equal(e.lock.held, false);
+  });
+
+  test('Expanded whole-record sorting by sequence, student ID, course and teacher preserves all entered records and current-row bytes', () => {
+    for (const column of [1, 2, 5, 6]) {
+      const e = environment(), s = filledCompletion(e);
+      s.getRange('I1').clearContent().setNote('');
+      e.context.prepareCompletionSheets();
+      s.getRange('I1').setValue('확인 사항').setNote('');
+      const before = recordSnapshot(s);
+      const originalOrder = s.getRange('A2:A5').getValues().flat();
+      s.getRange('A2:J5').sort({column, ascending: true});
+      assert.notDeepEqual(s.getRange('A2:A5').getValues().flat(), originalOrder);
+      assert.deepEqual(recordSnapshot(s), before);
+      for (let row = 2; row <= 5; row++) {
+        assert.equal(s.getRange(row, 8).getValue(), Buffer.byteLength(s.getRange(row, 7).getValue(), 'utf8'));
+      }
+      const student = s.getRange('B3:F3').getValues();
+      s.getRange('G3').setValue('아버지가 의사임');
+      e.edit(s.getRange('G3'));
+      assert.deepEqual(s.getRange('B3:F3').getValues(), student);
+      assert.equal(s.getRange('I3').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
+      assert.equal(s.getRange('H3').getValue(), Buffer.byteLength('아버지가 의사임', 'utf8'));
+      assert.equal(s.getRange('I1').getValue(), '확인 사항');
+      assert.equal(e.toasts.length, 0);
+    }
+  });
+
+  test('Setup restores a header sorted into the data without changing sorted student order, existing text or styles', () => {
+    const e = environment(), s = filledCompletion(e);
+    const before = recordSnapshot(s), header = s.getRange('A1:J1').getValues();
+    s.getRange('A1:J5').sort(1);
+    assert.equal(s.getRange('A5').getValue(), '순번');
+    assert.deepEqual(s.getRange('A1:A4').getValues().flat(), [1, 2, 3, 4]);
+    e.context.prepareCompletionSheets();
+    assert.deepEqual(s.getRange('A1:J1').getValues(), header);
+    assert.deepEqual(s.getRange('A2:A5').getValues().flat(), [1, 2, 3, 4]);
+    assert.deepEqual(recordSnapshot(s), before);
+    assert.match(e.alerts.at(-1), /제목 행 복원/);
+    for (let row = 2; row <= 5; row++) {
+      assert.equal(s.getRange(row, 8).getValue(), Buffer.byteLength(s.getRange(row, 7).getValue(), 'utf8'));
+    }
+  });
+
+  test('Editing after accidental header sorting validates the relocated student rather than the old event row', () => {
+    const e = environment(), s = filledCompletion(e);
+    s.getRange('A1:J5').sort(1);
+    const student = s.getRange('B3:F3').getValues();
+    s.getRange('G3').setValue('아버지가 의사임');
+    e.edit(s.getRange('G3'));
+    assert.equal(s.getRange('A1').getValue(), '순번');
+    assert.equal(s.getRange('G1').getValue(), '세특내용');
+    assert.deepEqual(s.getRange('B4:F4').getValues(), student);
+    assert.equal(s.getRange('G4').getValue(), '아버지가 의사임');
+    assert.equal(s.getRange('I4').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
+    assert.equal(s.getRange('I1').getValue(), '오류 사유');
+    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)');
+    assert.equal(e.toasts.length, 0);
+  });
+
+  test('Header restoration resets a saved validation row so earlier relocated records are also checked', () => {
+    const e = environment(), s = filledCompletion(e);
+    s.getRange('A1:J5').sort(1);
+    s.getRange('I1:I4').setValue('재검증 필요');
+    e.props.set(e.context.SETC_CURSOR_KEY_, JSON.stringify({sheetId: s.id, row: 4}));
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('A1').getValue(), '순번');
+    assert.ok(s.getRange('I2:I5').getValues().every(row => row[0] === '유튜브: 사기업 명칭 (영상/스트리밍)'));
+    assert.equal(e.props.has(e.context.SETC_CURSOR_KEY_), false);
+  });
+
+  test('Existing generated results migrate without an I1 title or note; registered sheets ignore later caption changes', () => {
+    for (const title of ['', '교사 확인']) {
+      const e = environment(), s = filledCompletion(e);
+      e.props.clear();
+      s.getRange('I1').setValue(title).setNote('');
+      const before = recordSnapshot(s);
+      e.context.prepareCompletionSheets();
+      assert.deepEqual(recordSnapshot(s), before);
+      assert.equal(e.props.get(e.context.SETC_FIXED_COLUMNS_KEY_ + s.id), 'G7:H8:I9');
+      s.getRange('I1').clearContent().setNote('');
+      s.getRange('G2').setValue('실험을 정리함.');
+      e.edit(s.getRange('G2'));
+      assert.equal(s.getRange('I2').getValue(), '');
+      assert.equal(e.toasts.length, 0);
+    }
+  });
+
+  test('Duplicate headers stop before moving rows or overwriting any entered content', () => {
+    const e = environment(), s = filledCompletion(e);
+    s.getRange('A6:I6').setValues(s.getRange('A1:I1').getValues());
+    const before = JSON.stringify(s.getRange('A1:J6').getValues());
+    e.context.prepareCompletionSheets();
+    assert.equal(JSON.stringify(s.getRange('A1:J6').getValues()), before);
+    assert.match(e.alerts.at(-1), /처리 보류:[\s\S]*제목 행이 여러 개/);
+  });
+
+  test('A student in row one is checked as data and never replaced with a header or excluded by a new filter', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('A1:I1').setValues([[1, 20101, '학생', '1기', '강좌', '교사', '아버지가 의사임', '=GET_NEIS_BYTE(G1)', '재검증 필요']]);
+    e.context.prepareCompletionSheets();
+    assert.equal(s.getRange('I1').getValue(), '재검증 필요');
+    assert.equal(s.getFilter(), null);
+    assert.match(e.alerts.at(-1), /제목 행을 확인할 수 없어/);
+    e.edit(s.getRange('G1'));
+    assert.equal(s.getRange('B1').getValue(), 20101);
+    assert.equal(s.getRange('G1').getValue(), '아버지가 의사임');
+    assert.equal(s.getRange('I1').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
+    assert.equal(s.getRange('H1').getValue(), Buffer.byteLength('아버지가 의사임', 'utf8'));
+  });
+
   test('Formula-looking reason is written as literal rich text; stale edit is not overwritten', () => {
     const e = environment(), s = e.add('최종이수자명단');
     s.getRange('G2').setRichTextValue(new Rich('= 탐구함.'));
@@ -614,8 +810,8 @@ module.exports = function ({source, test, assert, normalize}) {
     s2.getRange(2, 7, 20, 1).setValues(Array.from({length: 20}, () => ['특허를 조사함.']));
     e.edit(s.getRange(2, 7, 205, 1));
     assert.equal(s.getRange('I206').getValue(), '재검증 필요'); assert.ok(e.toasts.length);
-    e.context.revalidateAllSetc(); assert.ok(e.props.size);
-    e.context.revalidateAllSetc(); assert.equal(e.props.size, 0);
+    e.context.revalidateAllSetc(); assert.ok(e.props.has(e.context.SETC_CURSOR_KEY_));
+    e.context.revalidateAllSetc(); assert.equal(e.props.has(e.context.SETC_CURSOR_KEY_), false);
     assert.equal(s.getRange('I206').getValue(), ''); assert.match(s2.getRange('I21').getValue(), /지식재산권/);
     assert.equal(e.lock.held, false);
   });
@@ -649,7 +845,7 @@ module.exports = function ({source, test, assert, normalize}) {
       assert.ok(rich.styles.slice(start, start + phrase.length).every(style => style.color === '#ff0000'));
     }
     assert.equal(rich.styles[text.indexOf('제작')].color, '#000000');
-    assert.equal(s.getRange('H2').getFormula(), '=GET_NEIS_BYTE(G2)');
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
     s.getRange('G2').setValue('콘텐츠 제작 과정을 점검함.'); e.edit(s.getRange('G2'));
     assert.equal(s.getRange('I2').getValue(), '');
     rich = s.getRange('G2').getRichTextValue();
@@ -692,7 +888,7 @@ module.exports = function ({source, test, assert, normalize}) {
     const beforeBytes = s.getRange('H2').getValue();
     e.edit(s.getRange('G2'));
     assert.equal(s.getRange('G2').getValue(), expected);
-    assert.equal(s.getRange('H2').getFormula(), formula);
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
     assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(expected, 'utf8'));
     assert.equal(beforeBytes - s.getRange('H2').getValue(), 3);
     assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)\n특허: 지식재산권 관련 표현 확인 필요');
@@ -806,7 +1002,7 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('I3').getValue(), '');
     const range = s.getFilter().getRange();
     assert.deepEqual([range.getRow(), range.getColumn(), range.getLastRow(), range.getLastColumn()], [1, 1, 3, 9]);
-    assert.equal(s.getRange('H2').getFormula(), '=GET_NEIS_BYTE(G2)');
+    assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
   });
 
   test('Extending an A1 filter preserves column criteria, existing wider ranges and row values', () => {
@@ -906,7 +1102,7 @@ module.exports = function ({source, test, assert, normalize}) {
   test('Menu retains existing entry points and modal has four generation modes', () => {
     const e = environment(); e.context.onOpen(); e.context.openCompletionModal();
     const names = e.menus[0].items.map(i => i.fn);
-    for (const name of ['openAdminModal', 'promptAbsenteeCheck', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'openCompletionModal', 'revalidateAllSetc', 'showSetcValidationStatus']) assert.ok(names.includes(name));
+    for (const name of ['openAdminModal', 'promptAbsenteeCheck', 'createFinalCompletionList', 'createFinalCompletionListsByTerm', 'openCompletionModal', 'revalidateAllSetc', 'showSetcValidationStatus', 'prepareCompletionSheets']) assert.ok(names.includes(name));
     for (const mode of ['selected', 'byTerm', 'integrated', 'selectedIntegrated']) assert.ok(e.modal.html.includes('value="' + mode + '"'));
     assert.ok(e.modal.html.includes('new Option'));
   });

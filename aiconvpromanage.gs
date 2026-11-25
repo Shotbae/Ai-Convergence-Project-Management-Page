@@ -1,5 +1,5 @@
-// 전체 코드 확인본: 2026-11-25.1 (I열 자동 결과 인식 복구·선택 기수 통합·온점 검사 포함)
-var SETC_BUILD_ID_ = '2026-11-25.1';
+// 전체 코드 확인본: 2026-11-26.1 (G/H/I 고정·정렬 시 기존 내용 보존·제목행 복구 포함)
+var SETC_BUILD_ID_ = '2026-11-26.1';
 
 /**
  * =========================================================
@@ -16,6 +16,7 @@ function onOpen() {
     .addItem('✅ 최종 이수자 명단 생성 (전체 통합)', 'createFinalCompletionList')
     .addItem('📁 기수별 최종 이수자 명단 생성', 'createFinalCompletionListsByTerm')
     .addSeparator()
+    .addItem('🛠 명단 정렬·검사 설정 적용 (내용 보존)', 'prepareCompletionSheets')
     .addItem('🔎 세특 전체 재검증 (이어서 처리)', 'revalidateAllSetc')
     .addItem('🧪 온점 검사 작동 확인', 'showSetcValidationStatus')
     .addToUi();
@@ -1396,7 +1397,7 @@ function writeCompletionList_(sheet, students) {
   sheet.getRange('A1:I1').setValues([['순번', '학번', '이름', '기수', '강좌명', '담당교사', '세특내용', '세특 바이트수', '오류 사유']])
     .setFontWeight('bold').setBackground('#e0e0e0').setHorizontalAlignment('center');
   sheet.getRange(2, 1, students.length, 7).setValues(students.map((s, i) => [i + 1, ...s, '']));
-  sheet.getRange(2, 8, students.length, 1).setFormulas(students.map((_, i) => [`=IF(G${i + 2}="","",GET_NEIS_BYTE(G${i + 2}))`]));
+  sheet.getRange(2, 8, students.length, 1).setFormulas(students.map(() => [getCompletionByteFormula_()]));
   sheet.getRange(2, 1, students.length, 6).setHorizontalAlignment('center');
   sheet.getRange(2, 8, students.length, 1).setHorizontalAlignment('center');
   sheet.getRange(1, 1, students.length + 1, 9).setBorder(true, true, true, true, true, true);
@@ -1408,7 +1409,8 @@ function writeCompletionList_(sheet, students) {
 }
 
 /** 헤더와 모든 기록을 함께 필터링합니다. 기존 A1 필터의 열별 조건은 보존합니다. */
-function ensureCompletionFilter_(sheet) {
+function ensureCompletionFilter_(sheet, firstDataRow) {
+  if (firstDataRow === 1) return sheet.getName() + ': 제목 행을 확인할 수 없어 기존 필터를 유지했습니다. 제목 행을 먼저 확인해주세요.';
   const lastRow = Math.max(2, sheet.getLastRow());
   const existing = sheet.getFilter();
   if (!existing) { sheet.getRange(1, 1, lastRow, 9).createFilter(); return ''; }
@@ -1440,6 +1442,37 @@ function ensureCompletionFilter_(sheet) {
 var SETC_COLUMN_MARKER_ = '세특 자동 검증 결과입니다. 빨간 표현과 오류 사유를 확인하고 교사가 판단해주세요.';
 var SETC_CURSOR_KEY_ = 'SETC_REVALIDATE_CURSOR_V1';
 var SETC_GENERATED_REASONS_ = null;
+var SETC_FIXED_COLUMNS_KEY_ = 'SETC_FIXED_COLUMNS_V1_';
+
+/** 정렬로 다른 행에 이동해도 현재 행의 G열을 계산합니다. */
+function getCompletionByteFormula_() {
+  return '=IF(INDEX($G:$G,ROW())="","",GET_NEIS_BYTE(INDEX($G:$G,ROW())))';
+}
+
+function isCompletionHeaderRow_(values) {
+  return values[0] === '순번' && values[1] === '학번' && values[2] === '이름';
+}
+
+/** 이 프로그램이 작성한 바이트 수식만 교체하고 사용자 값·수식은 보존합니다. */
+function upgradeCompletionByteFormulas_(sheet, firstDataRow) {
+  const last = sheet.getLastRow();
+  if (last < firstDataRow) return;
+  const formulas = sheet.getRange(firstDataRow, 8, last - firstDataRow + 1, 1).getFormulas();
+  const target = getCompletionByteFormula_();
+  let start = 0, pending = [];
+  const flush = () => {
+    if (pending.length) sheet.getRange(start, 8, pending.length, 1).setFormulas(pending);
+    start = 0; pending = [];
+  };
+  formulas.forEach((entry, index) => {
+    const formula = entry[0].replace(/\s+/g, '').toUpperCase();
+    const legacy = /^=GET_NEIS_BYTE\(\$?G\$?\d+\)$/.test(formula)
+      || /^=IF\((\$?G\$?\d+)="","",GET_NEIS_BYTE\(\1\)\)$/.test(formula);
+    if (legacy) { if (!pending.length) start = firstDataRow + index; pending.push([target]); }
+    else flush();
+  });
+  flush();
+}
 
 function isCompletionSheet_(sheet) {
   return sheet.getName() === '최종이수자명단' || /^[0-9]+기_최종이수자명단$/.test(sheet.getName())
@@ -1469,42 +1502,83 @@ function isSetcGeneratedResult_(value) {
 
 function ensureSetcColumn_(sheet) {
   if (sheet.getMaxColumns() < 9) sheet.insertColumnsAfter(sheet.getMaxColumns(), 9 - sheet.getMaxColumns());
-  const header = sheet.getRange('I1');
-  const title = header.getValue();
-  if (header.getFormula()) throw new Error('I열에 기존 수식이 있어 오류 사유 열을 만들 수 없습니다.');
-  if (title !== '' && title !== '오류 사유') {
-    throw new Error('[' + sheet.getName() + '] I1에 다른 제목이 있습니다. 1행을 포함해 정렬했는지와 오류 사유 열의 위치를 확인해주세요. 기존 자료는 유지합니다.');
-  }
   const last = Math.max(1, sheet.getLastRow());
+  const values = sheet.getRange(1, 1, last, 9).getValues();
+  const headers = [];
+  values.forEach((row, index) => { if (isCompletionHeaderRow_(row)) headers.push(index + 1); });
+  if (headers.length > 1) throw new Error('[' + sheet.getName() + '] 제목 행이 여러 개입니다. 기존 내용은 유지했으며 중복 제목 행을 확인해주세요.');
+  // 제목이 비워진 기존 양식은 빈 첫 행을 남기고, 학생이 있는 첫 행은 데이터로 처리합니다.
+  const emptyFirst = values[0].slice(0, 8).every(value => value === '');
+  const headerRow = headers[0] || (emptyFirst ? 1 : 0);
   const formulas = sheet.getRange(1, 9, last, 1).getFormulas();
   const formulaRow = formulas.findIndex(row => row[0]);
   if (formulaRow >= 0) {
     throw new Error('[' + sheet.getName() + '] I열 I' + (formulaRow + 1) + '에 기존 수식이 있어 보호했습니다. 다른 열에 보관한 뒤 재검증해주세요.');
   }
-  if (title === '오류 사유' && header.getNote() === SETC_COLUMN_MARKER_) return;
-  const values = sheet.getRange(1, 9, last, 1).getValues();
-  const conflictRow = values.slice(1).findIndex(row => row[0] !== '' && (title !== '오류 사유' || !isSetcGeneratedResult_(row[0])));
-  if (conflictRow >= 0) {
-    throw new Error('[' + sheet.getName() + '] I열 I' + (conflictRow + 2) + '에 자동 검사 결과로 확인할 수 없는 자료가 있어 보호했습니다. 다른 열에 보관한 뒤 재검증해주세요.');
+  const props = PropertiesService.getDocumentProperties();
+  const key = SETC_FIXED_COLUMNS_KEY_ + sheet.getSheetId();
+  const registered = props.getProperty(key) === 'G7:H8:I9';
+  const legacy = headerRow && sheet.getRange(headerRow, 9).getNote() === SETC_COLUMN_MARKER_;
+  if (!registered && !legacy) {
+    const conflictRow = values.findIndex((row, index) => index + 1 !== headerRow && row[8] !== '' && !isSetcGeneratedResult_(row[8]));
+    if (conflictRow >= 0) throw new Error('[' + sheet.getName() + '] I열 I' + (conflictRow + 1) + '에 자동 검사 결과로 확인할 수 없는 자료가 있어 보호했습니다. 다른 열에 보관한 뒤 설정을 적용해주세요.');
   }
-  // 제목이 정상이고 모든 기존 값이 알려진 자동 결과이면, 메모 표식만 복구합니다.
-  header.setValue('오류 사유').setNote(SETC_COLUMN_MARKER_).setFontWeight('bold').setBackground('#e0e0e0');
+  let movedHeaderFrom = 0;
+  if (headers.length === 1 && headerRow > 1) {
+    // 행 전체를 이동해 학생의 입력·부분 서식·링크·옆 열을 그대로 보존합니다.
+    sheet.moveRows(sheet.getRange(headerRow, 1, 1, 9), 1);
+    movedHeaderFrom = headerRow;
+  }
+  const firstDataRow = headerRow ? 2 : 1;
+  if (headerRow) {
+    const header = sheet.getRange('I1');
+    if (header.getValue() === '') header.setValue('오류 사유');
+    if (header.getNote() === '') header.setNote(SETC_COLUMN_MARKER_);
+    sheet.setFrozenRows(Math.max(1, sheet.getFrozenRows()));
+  }
+  props.setProperty(key, 'G7:H8:I9');
+  upgradeCompletionByteFormulas_(sheet, firstDataRow);
   sheet.setColumnWidth(9, 450);
   sheet.getRange(1, 9, sheet.getMaxRows(), 1).setWrap(true);
+  return {firstDataRow: firstDataRow, movedHeaderFrom: movedHeaderFrom};
+}
+
+/** 기존 명단의 G/I 내용은 다시 쓰지 않고 정렬·검사 설정만 적용합니다. */
+function prepareCompletionSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet(), lock = LockService.getDocumentLock();
+  if (!lock || !lock.tryLock(10000)) { SpreadsheetApp.getUi().alert('다른 작업이 진행 중입니다. 잠시 후 다시 실행해주세요.'); return; }
+  const done = [], failed = [], notices = [];
+  try {
+    for (const sheet of ss.getSheets().filter(isCompletionSheet_)) {
+      try {
+        const layout = ensureSetcColumn_(sheet);
+        const notice = ensureCompletionFilter_(sheet, layout.firstDataRow);
+        if (notice) notices.push(notice);
+        done.push(sheet.getName() + (layout.movedHeaderFrom ? ' (제목 행 복원)' : ''));
+      } catch (error) { failed.push(sheet.getName() + ': ' + error.message); }
+    }
+    // 정렬 전의 이어가기 위치 대신 다음 전체 검사는 처음부터 시작합니다.
+    PropertiesService.getDocumentProperties().deleteProperty(SETC_CURSOR_KEY_);
+  } finally { lock.releaseLock(); }
+  SpreadsheetApp.getUi().alert('명단 설정 적용 [' + SETC_BUILD_ID_ + ']\n' + done.length + '개 시트 처리\n'
+    + '기존 세특과 오류 사유는 유지했습니다.\n' + done.join('\n')
+    + (failed.length ? '\n처리 보류:\n' + failed.join('\n') : '') + (notices.length ? '\n필터 확인:\n' + notices.join('\n') : ''));
 }
 
 // 사용자 편집 후 실행됩니다. 스크립트의 RichText 쓰기는 onEdit를 다시 호출하지 않습니다.
 function onEdit(e) {
   if (!e || !e.range) return;
   const range = e.range, sheet = range.getSheet();
-  if (!isCompletionSheet_(sheet) || range.getColumn() > 7 || range.getLastColumn() < 7 || range.getLastRow() < 2) return;
+  if (!isCompletionSheet_(sheet) || range.getColumn() > 7 || range.getLastColumn() < 7) return;
   const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
   const lock = LockService.getDocumentLock();
   if (!lock || !lock.tryLock(1000)) { ss.toast('다른 작업 중입니다. 세특 전체 재검증을 실행해주세요.', '세특 검증', 6); return; }
   try {
-    ensureSetcColumn_(sheet);
-    const start = Math.max(2, range.getRow());
-    const end = Math.min(range.getLastRow(), Math.max(start, sheet.getLastRow()));
+    const editedStart = range.getRow(), editedEnd = range.getLastRow();
+    const layout = ensureSetcColumn_(sheet);
+    const start = layout.movedHeaderFrom ? layout.firstDataRow : Math.max(layout.firstDataRow, editedStart);
+    const end = layout.movedHeaderFrom ? sheet.getLastRow() : Math.min(editedEnd, Math.max(start, sheet.getLastRow()));
+    if (start > end) return;
     sheet.getRange(start, 9, end - start + 1, 1).setValue('재검증 필요');
     const deadline = Date.now() + 20000;
     let row = start;
@@ -1630,11 +1704,12 @@ function revalidateAllSetc() {
     const failed = [], filterNotices = [], deadline = Date.now() + 240000;
     for (; index < sheets.length; index++) {
       const sheet = sheets[index];
-      let row = cursor && cursor.sheetId === sheet.getSheetId() ? Math.max(2, cursor.row) : 2;
-      const last = sheet.getLastRow();
+      let row = cursor && cursor.sheetId === sheet.getSheetId() ? Math.max(1, cursor.row) : 1;
       try {
-        ensureSetcColumn_(sheet);
-        const filterNotice = ensureCompletionFilter_(sheet);
+        const layout = ensureSetcColumn_(sheet);
+        row = layout.movedHeaderFrom ? layout.firstDataRow : Math.max(layout.firstDataRow, row);
+        const last = sheet.getLastRow();
+        const filterNotice = ensureCompletionFilter_(sheet, layout.firstDataRow);
         if (filterNotice) filterNotices.push(filterNotice);
         if (row <= last) sheet.getRange(row, 9, last - row + 1, 1).setValue('재검증 필요');
         for (; row <= last; row++) {
