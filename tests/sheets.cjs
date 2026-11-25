@@ -506,6 +506,85 @@ module.exports = function ({source, test, assert, normalize}) {
     e.edit(other.getRange('G2')); assert.equal(other.getRange('I2').getValue(), '');
   });
 
+  test('Missing I1 marker recovers generated stale reasons after new data and partial-column sorting', () => {
+    for (const action of ['edit', 'batch']) {
+      const e = environment(), s = e.add('4기+5기_통합이수자명단');
+      s.getRange('I1').setValue('오류 사유');
+      // A~H의 새 행 순서와 I열에 남아 있는 이전 검사 결과를 재현한다.
+      s.getRange('A2:H3').setValues([
+        [1, 20102, '학생2', '5기', '강좌2', '교사', 'AI 모델을 활용함.', '=GET_NEIS_BYTE(G2)'],
+        [2, 20101, '학생1', '4기', '강좌1', '교사', '유튜브 영상을 분석함.', '=GET_NEIS_BYTE(G3)']]);
+      s.getRange('I2:I3').setValues([['유튜브: 사기업 명칭 (영상/스트리밍)'], ['특허: 지식재산권 관련 표현 확인 필요']]);
+      const before = JSON.stringify(s.getRange('A2:H3').getValues());
+      if (action === 'edit') e.edit(s.getRange('G2:G3'));
+      else e.context.revalidateAllSetc();
+      assert.equal(s.getRange('I2').getValue(), '', action);
+      assert.equal(s.getRange('I3').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)', action);
+      assert.equal(s.getRange('I1').getNote(), e.context.SETC_COLUMN_MARKER_);
+      assert.equal(JSON.stringify(s.getRange('A2:H3').getValues()), before);
+      assert.equal(e.toasts.length, 0);
+    }
+  });
+
+  test('I1 marker recovery refuses mixed user notes, values, formulas and changed headers', () => {
+    const cases = [
+      {title: '오류 사유', values: ['유튜브: 사기업 명칭 (영상/스트리밍)', '교사가 적은 메모']},
+      {title: '오류 사유', values: ['수행항: 어미 오류', 42]},
+      {title: '오류 사유', values: ['수행항: 어미 오류', '=1+1']},
+      {title: '', values: ['수행항: 어미 오류', '']},
+      {title: '교사 메모', values: ['수행항: 어미 오류', '']}
+    ];
+    for (const sample of cases) {
+      const e = environment(), s = e.add('최종이수자명단');
+      s.getRange('I1').setValue(sample.title); s.getRange('I2:I3').setValues(sample.values.map(value => [value]));
+      s.getRange('G2').setValue('유튜브 영상을 분석함.');
+      const before = JSON.stringify(s.getRange('G1:I3').getValues());
+      assert.throws(() => e.context.ensureSetcColumn_(s), /I열|I1/);
+      assert.equal(JSON.stringify(s.getRange('G1:I3').getValues()), before);
+      assert.equal(s.getRange('I1').getNote(), '');
+    }
+  });
+
+  test('Generated-result recognition accepts real checker explanations and pending statuses only', () => {
+    const e = environment();
+    for (const text of ['유튜브 영상을 살펴봄.', '특허 원리를 정리함.', '대회에서 수상함.', '실험을 수행했다.',
+      'ㅁㄴ', '컨 텐 츠 제 작', 'Hello world를 활용함.', '숨은\u200b문자를 정리함.', '실험  결과를 정리함.',
+      '값을 정리함~', '수행항', '원리를 이해함 추가적으로 적용함', '= 탐구함.']) {
+      const output = e.context.formatSetcIssues_(e.context.checkSetcLocalRules(text));
+      assert.ok(output, text);
+      assert.equal(e.context.isSetcGeneratedResult_(output), true, output);
+    }
+    for (const status of ['', '재검증 필요', '수식 셀은 자동 검증 대상이 아닙니다.', '세특 내용을 문자열로 입력해주세요.']) {
+      assert.equal(e.context.isSetcGeneratedResult_(status), true);
+    }
+    for (const unknown of [null, 10, '교사 메모', '표현: 알 수 없는 사유', ': 어미 오류', '어미 오류']) {
+      assert.equal(e.context.isSetcGeneratedResult_(unknown), false);
+    }
+  });
+
+  test('Formulas in an already managed I column remain protected', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    e.context.ensureSetcColumn_(s);
+    s.getRange('G2').setValue('유튜브 영상을 분석함.'); s.getRange('I2').setValue('=1+1');
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('I2').getFormula(), '=1+1');
+    assert.match(e.toasts.at(-1)[0], /I열.*수식/);
+    assert.equal(s.getRange('G2').getValue(), '유튜브 영상을 분석함.');
+  });
+
+  test('Normal data-row sorting keeps the I1 marker and batch revalidation updates reasons for current G values', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    e.context.ensureSetcColumn_(s);
+    s.getRange('G2:G3').setValues([['특허 원리를 정리함.'], ['유튜브 영상을 분석함.']]);
+    e.edit(s.getRange('G2:G3'));
+    // I1은 그대로 두고 A~H를 다시 정렬한 뒤 남는 사유를 현재 G값으로 갱신한다.
+    s.getRange('G2:G3').setValues([['유튜브 영상을 분석함.'], ['특허 원리를 정리함.']]);
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('I1').getNote(), e.context.SETC_COLUMN_MARKER_);
+    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)');
+    assert.equal(s.getRange('I3').getValue(), '특허: 지식재산권 관련 표현 확인 필요');
+  });
+
   test('Existing I content/formulas are rejected and G formulas remain formulas', () => {
     const e = environment(), s = e.add('최종이수자명단');
     s.getRange('I2').setValue('교사가 작성한 자료'); s.getRange('G2').setValue('유튜브 영상을 분석함.');

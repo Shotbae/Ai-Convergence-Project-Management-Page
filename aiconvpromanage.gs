@@ -1,5 +1,5 @@
-// 전체 코드 확인본: 2026-11-05.3 (선택 기수 통합·온점 검사·헤더 필터 포함)
-var SETC_BUILD_ID_ = '2026-11-05.3';
+// 전체 코드 확인본: 2026-11-25.1 (I열 자동 결과 인식 복구·선택 기수 통합·온점 검사 포함)
+var SETC_BUILD_ID_ = '2026-11-25.1';
 
 /**
  * =========================================================
@@ -1439,10 +1439,32 @@ function ensureCompletionFilter_(sheet) {
 
 var SETC_COLUMN_MARKER_ = '세특 자동 검증 결과입니다. 빨간 표현과 오류 사유를 확인하고 교사가 판단해주세요.';
 var SETC_CURSOR_KEY_ = 'SETC_REVALIDATE_CURSOR_V1';
+var SETC_GENERATED_REASONS_ = null;
 
 function isCompletionSheet_(sheet) {
   return sheet.getName() === '최종이수자명단' || /^[0-9]+기_최종이수자명단$/.test(sheet.getName())
     || /^[0-9]+기(?:\+[0-9]+기)*_통합이수자명단$/.test(sheet.getName());
+}
+
+/** 표식이 없는 기존 명단도 알려진 자동 출력 형식인지 보수적으로 확인합니다. */
+function isSetcGeneratedResult_(value) {
+  if (value === '' || ['재검증 필요', '수식 셀은 자동 검증 대상이 아닙니다.', '세특 내용을 문자열로 입력해주세요.'].includes(value)) return true;
+  if (typeof value !== 'string') return false;
+  if (!SETC_GENERATED_REASONS_) {
+    SETC_GENERATED_REASONS_ = new Set(SETC_RULE_DATA_.names.map(entry => entry[1]));
+    SETC_RULE_DATA_.moe.forEach(rule => {
+      SETC_GENERATED_REASONS_.add(rule.high_reason);
+      SETC_GENERATED_REASONS_.add(rule.review_reason);
+    });
+    ['영어/외국어 표기', '연속 공백 사용', '숨은 문자·비표준 공백 사용', '특수기호 사용(확인필요)',
+      '금지기호 사용(수정필요)', '어미 오류', '자모 연속 표기 오타 가능성(확인필요)',
+      '한 글자 어절 연속 사용(확인필요)', '문장부호 누락 의심(확인필요)', '문장 끝 온점 누락(확인필요)']
+      .forEach(reason => SETC_GENERATED_REASONS_.add(reason));
+  }
+  return value.split(/\r\n|\r|\n/).every(line => {
+    const separator = line.lastIndexOf(': ');
+    return separator > 0 && line.slice(0, separator).trim() !== '' && SETC_GENERATED_REASONS_.has(line.slice(separator + 2));
+  });
 }
 
 function ensureSetcColumn_(sheet) {
@@ -1450,13 +1472,22 @@ function ensureSetcColumn_(sheet) {
   const header = sheet.getRange('I1');
   const title = header.getValue();
   if (header.getFormula()) throw new Error('I열에 기존 수식이 있어 오류 사유 열을 만들 수 없습니다.');
-  if (title === '오류 사유' && header.getNote() === SETC_COLUMN_MARKER_) return;
-  const last = Math.max(1, sheet.getLastRow());
-  const values = sheet.getRange(1, 9, last, 1).getValues();
-  const formulas = sheet.getRange(1, 9, last, 1).getFormulas();
-  if ((title !== '' && title !== '오류 사유') || formulas.some(r => r[0]) || values.slice(1).some(r => r[0] !== '')) {
-    throw new Error('[' + sheet.getName() + '] I열에 기존 자료가 있습니다. 자료를 옮긴 뒤 재검증해주세요.');
+  if (title !== '' && title !== '오류 사유') {
+    throw new Error('[' + sheet.getName() + '] I1에 다른 제목이 있습니다. 1행을 포함해 정렬했는지와 오류 사유 열의 위치를 확인해주세요. 기존 자료는 유지합니다.');
   }
+  const last = Math.max(1, sheet.getLastRow());
+  const formulas = sheet.getRange(1, 9, last, 1).getFormulas();
+  const formulaRow = formulas.findIndex(row => row[0]);
+  if (formulaRow >= 0) {
+    throw new Error('[' + sheet.getName() + '] I열 I' + (formulaRow + 1) + '에 기존 수식이 있어 보호했습니다. 다른 열에 보관한 뒤 재검증해주세요.');
+  }
+  if (title === '오류 사유' && header.getNote() === SETC_COLUMN_MARKER_) return;
+  const values = sheet.getRange(1, 9, last, 1).getValues();
+  const conflictRow = values.slice(1).findIndex(row => row[0] !== '' && (title !== '오류 사유' || !isSetcGeneratedResult_(row[0])));
+  if (conflictRow >= 0) {
+    throw new Error('[' + sheet.getName() + '] I열 I' + (conflictRow + 2) + '에 자동 검사 결과로 확인할 수 없는 자료가 있어 보호했습니다. 다른 열에 보관한 뒤 재검증해주세요.');
+  }
+  // 제목이 정상이고 모든 기존 값이 알려진 자동 결과이면, 메모 표식만 복구합니다.
   header.setValue('오류 사유').setNote(SETC_COLUMN_MARKER_).setFontWeight('bold').setBackground('#e0e0e0');
   sheet.setColumnWidth(9, 450);
   sheet.getRange(1, 9, sheet.getMaxRows(), 1).setWrap(true);
