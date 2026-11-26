@@ -9,8 +9,13 @@ vm.runInContext(source.toString('utf8'), context);
 if (typeof context.checkSetcRuntime_ !== 'function' || !context.checkSetcRuntime_().ok) {
   throw new Error('Runtime punctuation checks failed; release was not created.');
 }
-for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets']) {
+for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets', 'normalizeSetcText_', 'checkSetcCourseStart_']) {
   if (typeof context[name] !== 'function') throw new Error('Missing feature: ' + name);
+}
+const restored = context.normalizeSetcText_("AI와 언어' 수업에 참여함.", 'AI와 언어').text;
+if (restored !== "'AI와 언어' 수업에 참여함." || context.normalizeSetcText_(restored, 'AI와 언어').text !== restored
+    || context.checkSetcCourseStart_(restored, 'AI와 언어').length !== 0) {
+  throw new Error('Course opening-quote restoration failed; release was not created.');
 }
 const version = context.SETC_BUILD_ID_;
 const file = 'AI융합_전체코드_' + version + '.txt';
