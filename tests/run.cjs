@@ -71,7 +71,7 @@ test('All prior unrelated functions remain byte-equivalent after newline normali
 require('./sheets.cjs')({source, test, assert, normalize});
 require('./additional-rules.cjs')({context, test, assert, normalize});
 require('./space-normalization.cjs')({context, test, assert, normalize});
-require('./course-start.cjs')({context, test, assert, normalize});
+require('./opening-quote.cjs')({context, test, assert});
 require('./punctuation-rules.cjs')({context, test, assert, normalize});
 require('./release-artifact.cjs')({context, test, assert});
 console.log('Passed', passed, 'test groups');

@@ -1,5 +1,5 @@
-// 전체 코드 확인본: 2026-11-26.2 (문두 강좌명 여는 따옴표 자동 복원·고정 열·정렬 보존 포함)
-var SETC_BUILD_ID_ = '2026-11-26.2';
+// 전체 코드 확인본: 2026-11-26.3 (강좌명 대조 제거·문두 따옴표 패턴 복원·정렬 보존 포함)
+var SETC_BUILD_ID_ = '2026-11-26.3';
 
 /**
  * =========================================================
@@ -1492,6 +1492,7 @@ function isSetcGeneratedResult_(value) {
     ['영어/외국어 표기', '연속 공백 사용', '숨은 문자·비표준 공백 사용', '특수기호 사용(확인필요)',
       '금지기호 사용(수정필요)', '어미 오류', '자모 연속 표기 오타 가능성(확인필요)',
       '한 글자 어절 연속 사용(확인필요)', '문장부호 누락 의심(확인필요)', '문장 끝 온점 누락(확인필요)',
+      // 이전 버전 출력 인식용입니다. 새 검사에서는 아래 두 사유를 생성하지 않습니다.
       '문두 강좌명 따옴표 확인(확인필요)', '문두 강좌명 불일치(확인필요)']
       .forEach(reason => SETC_GENERATED_REASONS_.add(reason));
   }
@@ -1570,9 +1571,8 @@ function prepareCompletionSheets() {
 function onEdit(e) {
   if (!e || !e.range) return;
   const range = e.range, sheet = range.getSheet();
-  const touchesCourse = range.getColumn() <= 5 && range.getLastColumn() >= 5;
   const touchesText = range.getColumn() <= 7 && range.getLastColumn() >= 7;
-  if (!isCompletionSheet_(sheet) || (!touchesCourse && !touchesText)) return;
+  if (!isCompletionSheet_(sheet) || !touchesText) return;
   const ss = e.source || SpreadsheetApp.getActiveSpreadsheet();
   const lock = LockService.getDocumentLock();
   if (!lock || !lock.tryLock(1000)) { ss.toast('다른 작업 중입니다. 세특 전체 재검증을 실행해주세요.', '세특 검증', 6); return; }
@@ -1598,10 +1598,9 @@ function validateSetcRow_(sheet, row) {
   const value = cell.getValue();
   if (value === '') { cell.setFontColor('#000000'); output.clearContent(); return; }
   if (typeof value !== 'string') { output.setValue('세특 내용을 문자열로 입력해주세요.'); return; }
-  const courseCell = sheet.getRange(row, 5), course = getSetcCourseName_(courseCell.getValue());
-  const normalized = normalizeSetcText_(value, course);
+  const normalized = normalizeSetcText_(value);
   const text = normalized.text;
-  const issues = checkSetcLocalRules(text).concat(checkSetcCourseStart_(text, course));
+  const issues = checkSetcLocalRules(text);
   const black = SpreadsheetApp.newTextStyle().setForegroundColor('#000000').build();
   const red = SpreadsheetApp.newTextStyle().setForegroundColor('#ff0000').build();
   const existing = cell.getRichTextValue();
@@ -1612,9 +1611,9 @@ function validateSetcRow_(sheet, row) {
   builder.setTextStyle(black);
   issues.forEach(issue => issue.spans.forEach(span => builder.setTextStyle(span.start, span.end, red)));
   // 잠금은 다른 스크립트 작업끼리 적용되므로 사용자 입력은 쓰기 직전에 다시 확인합니다.
-  if (cell.getValue() !== value || cell.getFormula() || getSetcCourseName_(courseCell.getValue()) !== course) { output.setValue('재검증 필요'); return; }
+  if (cell.getValue() !== value || cell.getFormula()) { output.setValue('재검증 필요'); return; }
   cell.setRichTextValue(builder.build());
-  if (cell.getValue() !== text || cell.getFormula() || getSetcCourseName_(courseCell.getValue()) !== course) { output.setValue('재검증 필요'); return; }
+  if (cell.getValue() !== text || cell.getFormula()) { output.setValue('재검증 필요'); return; }
   // '='로 시작하는 검출 표현도 수식이 아닌 텍스트로 기록합니다.
   const explanation = formatSetcIssues_(issues);
   if (explanation) output.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(explanation).build());
@@ -1641,42 +1640,16 @@ function normalizeSetcSpaces_(text) {
   return {text: parts.join(''), segments: segments};
 }
 
-function getSetcCourseName_(course) {
-  return typeof course === 'string' ? normalizeSetcSpaces_(course.trim()).text : '';
-}
-
-/** 문두가 E열 강좌명 + 닫는 작은따옴표이면 빠진 여는 작은따옴표 한 개만 복원합니다. */
-function normalizeSetcText_(text, course) {
-  const normalized = normalizeSetcSpaces_(text), name = getSetcCourseName_(course);
-  if (name && !normalized.text.startsWith("'") && normalized.text.startsWith(name + "'")) {
+/** 문두의 제목 + 닫는 작은따옴표 + 수업/강좌 형태에서 여는 작은따옴표를 복원합니다. E열과 대조하지 않습니다. */
+function normalizeSetcText_(text) {
+  const normalized = normalizeSetcSpaces_(text);
+  const missingOpening = /^[^\s'"‘’“”\r\n][^'"\r\n]*'[ \t]*(?:수업|강좌)(?=[가-힣\s.,!?]|$)/u.test(normalized.text);
+  if (missingOpening) {
     normalized.text = "'" + normalized.text;
     normalized.segments.forEach(segment => { segment.targetStart++; });
     normalized.prependedQuote = true;
   }
   return normalized;
-}
-
-/** 강좌명 기반 문두 검사는 시트 전용입니다. 원본의 단일 본문 규칙은 변경하지 않습니다. */
-function checkSetcCourseStart_(text, course) {
-  const name = getSetcCourseName_(course);
-  if (!name || !text.trim() || text.startsWith("'" + name + "'")) return [];
-  let start = 0, end, reason, ruleId;
-  const missingQuotes = text.startsWith(name) && /^(?:\s|$)/u.test(text.slice(name.length));
-  const missingClose = text.startsWith("'" + name) && /^(?:\s|$)/u.test(text.slice(name.length + 1));
-  if (missingQuotes || missingClose) {
-    end = name.length + (missingClose ? 1 : 0);
-    reason = '문두 강좌명 따옴표 확인(확인필요)';
-    ruleId = 'SETC-COURSE-QUOTE-REVIEW';
-  } else {
-    start = text.search(/\S/u);
-    const prefix = /^'[^'\r\n]+'|^\S+/u.exec(text.slice(start))[0];
-    end = start + Math.min(100, prefix.length);
-    // 표시 경계에서 이모지 등 UTF-16 문자쌍을 나누지 않습니다.
-    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end++;
-    reason = '문두 강좌명 불일치(확인필요)';
-    ruleId = 'SETC-COURSE-START-REVIEW';
-  }
-  return [{ruleId: ruleId, reason: reason, reviewLevel: 'REVIEW', spans: [{start: start, end: end, label: text.slice(start, end)}]}];
 }
 
 /** 공백 정리·따옴표 복원 후 남는 글자의 부분 서식과 링크를 원래 위치에서 옮깁니다. */

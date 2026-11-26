@@ -15,12 +15,12 @@ module.exports = function ({context, test, assert}) {
     vm.runInContext(release.toString('utf8'), delivered);
     assert.equal(delivered.SETC_BUILD_ID_, manifest.version);
     assert.equal(delivered.checkSetcRuntime_().ok, true);
-    for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets', 'normalizeSetcText_', 'checkSetcCourseStart_']) {
+    for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets', 'normalizeSetcText_']) {
       assert.equal(typeof delivered[name], 'function');
     }
-    const restored = delivered.normalizeSetcText_("AI와 언어' 수업에 참여함.", 'AI와 언어').text;
+    const restored = delivered.normalizeSetcText_("AI와 언어' 수업에 참여함.").text;
     assert.equal(restored, "'AI와 언어' 수업에 참여함.");
-    assert.equal(delivered.normalizeSetcText_(restored, 'AI와 언어').text, restored);
-    assert.equal(delivered.checkSetcCourseStart_(restored, 'AI와 언어').length, 0);
+    assert.equal(delivered.normalizeSetcText_(restored).text, restored);
+    assert.equal(typeof delivered.checkSetcCourseStart_, 'undefined');
   });
 };

@@ -439,7 +439,7 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.deepEqual(s.getRange('B2:C3').getValues(), [[20101, '학생1'], [20102, '학생2']]);
     const text = '원리를 이해함 추가적으로 탐구함';
     s.getRange('G2').setValue(text); e.edit(s.getRange('G2'));
-    assert.equal(s.getRange('I2').getValue(), '이해함: 문장부호 누락 의심(확인필요)\n탐구함: 문장 끝 온점 누락(확인필요)\n원리를: 문두 강좌명 불일치(확인필요)');
+    assert.equal(s.getRange('I2').getValue(), '이해함: 문장부호 누락 의심(확인필요)\n탐구함: 문장 끝 온점 누락(확인필요)');
     assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(text, 'utf8'));
     s.getRange('G3').setValue('아버지가 의사임');
     const backup = e.add('보관_1기+2기_통합이수자명단'); backup.getRange('G2').setValue('검사 제외 대상');
@@ -550,8 +550,8 @@ module.exports = function ({source, test, assert, normalize}) {
       const before = JSON.stringify(s.getRange('A2:G3').getValues());
       if (action === 'edit') e.edit(s.getRange('G2:G3'));
       else e.context.revalidateAllSetc();
-      assert.equal(s.getRange('I2').getValue(), 'AI: 문두 강좌명 불일치(확인필요)', action);
-      assert.equal(s.getRange('I3').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)\n유튜브: 문두 강좌명 불일치(확인필요)', action);
+      assert.equal(s.getRange('I2').getValue(), '', action);
+      assert.equal(s.getRange('I3').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)', action);
       assert.equal(s.getRange('I1').getNote(), e.context.SETC_COLUMN_MARKER_);
       assert.equal(JSON.stringify(s.getRange('A2:G3').getValues()), before);
       assert.equal(s.getRange('H2').getFormula(), e.context.getCompletionByteFormula_());
@@ -703,7 +703,7 @@ module.exports = function ({source, test, assert, normalize}) {
       s.getRange('G3').setValue('아버지가 의사임');
       e.edit(s.getRange('G3'));
       assert.deepEqual(s.getRange('B3:F3').getValues(), student);
-      assert.equal(s.getRange('I3').getValue(), '의사임: 문장 끝 온점 누락(확인필요)\n아버지가: 문두 강좌명 불일치(확인필요)');
+      assert.equal(s.getRange('I3').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
       assert.equal(s.getRange('H3').getValue(), Buffer.byteLength('아버지가 의사임', 'utf8'));
       assert.equal(s.getRange('I1').getValue(), '확인 사항');
       assert.equal(e.toasts.length, 0);
@@ -736,9 +736,9 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(s.getRange('G1').getValue(), '세특내용');
     assert.deepEqual(s.getRange('B4:F4').getValues(), student);
     assert.equal(s.getRange('G4').getValue(), '아버지가 의사임');
-    assert.equal(s.getRange('I4').getValue(), '의사임: 문장 끝 온점 누락(확인필요)\n아버지가: 문두 강좌명 불일치(확인필요)');
+    assert.equal(s.getRange('I4').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
     assert.equal(s.getRange('I1').getValue(), '오류 사유');
-    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)\n기록1: 문두 강좌명 불일치(확인필요)');
+    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)');
     assert.equal(e.toasts.length, 0);
   });
 
@@ -749,8 +749,7 @@ module.exports = function ({source, test, assert, normalize}) {
     e.props.set(e.context.SETC_CURSOR_KEY_, JSON.stringify({sheetId: s.id, row: 4}));
     e.context.revalidateAllSetc();
     assert.equal(s.getRange('A1').getValue(), '순번');
-    assert.deepEqual(s.getRange('I2:I5').getValues().map(row => row[0]), [1, 2, 3, 4].map(n =>
-      '유튜브: 사기업 명칭 (영상/스트리밍)\n기록' + n + ': 문두 강좌명 불일치(확인필요)'));
+    assert.ok(s.getRange('I2:I5').getValues().every(row => row[0] === '유튜브: 사기업 명칭 (영상/스트리밍)'));
     assert.equal(e.props.has(e.context.SETC_CURSOR_KEY_), false);
   });
 
@@ -766,7 +765,7 @@ module.exports = function ({source, test, assert, normalize}) {
       s.getRange('I1').clearContent().setNote('');
       s.getRange('G2').setValue('실험을 정리함.');
       e.edit(s.getRange('G2'));
-      assert.equal(s.getRange('I2').getValue(), '실험을: 문두 강좌명 불일치(확인필요)');
+      assert.equal(s.getRange('I2').getValue(), '');
       assert.equal(e.toasts.length, 0);
     }
   });
@@ -790,7 +789,7 @@ module.exports = function ({source, test, assert, normalize}) {
     e.edit(s.getRange('G1'));
     assert.equal(s.getRange('B1').getValue(), 20101);
     assert.equal(s.getRange('G1').getValue(), '아버지가 의사임');
-    assert.equal(s.getRange('I1').getValue(), '의사임: 문장 끝 온점 누락(확인필요)\n아버지가: 문두 강좌명 불일치(확인필요)');
+    assert.equal(s.getRange('I1').getValue(), '의사임: 문장 끝 온점 누락(확인필요)');
     assert.equal(s.getRange('H1').getValue(), Buffer.byteLength('아버지가 의사임', 'utf8'));
   });
 
@@ -799,7 +798,7 @@ module.exports = function ({source, test, assert, normalize}) {
     const subjects = ['지식 전달 전문가로서의 교사', '스토리에 생명을 불어넣는 웹툰', '책에 가치를 더하는 사람',
       '수학교재개발자의 희망 진로와 로드맵', '언어의 온도', '나의 희망 진로', '인공지능을 활용한 간호사', '인공지능의 발전'];
     const inputs = subjects.map(subject => "AI와 언어' 수업에 참여하여 '" + subject + "'를 주제로 발표 자료를 제작함.");
-    s.getRange(2, 5, inputs.length, 1).setValues(inputs.map(() => ['AI와 언어']));
+    s.getRange(2, 5, inputs.length, 1).setValues(inputs.map(() => ['AI를 활용하는 언어 탐구(정식 강좌명)']));
     s.getRange(2, 7, inputs.length, 1).setValues(inputs.map(text => [text]));
     s.getRange(2, 8, inputs.length, 1).setValues(inputs.map((_, index) => ['=GET_NEIS_BYTE(G' + (index + 2) + ')']));
     e.edit(s.getRange(2, 7, inputs.length, 1));
@@ -843,7 +842,7 @@ module.exports = function ({source, test, assert, normalize}) {
     }
   });
 
-  test('Batch validation uses each current course, restores exact prefixes and reviews uncertain openings without guessing', () => {
+  test('Batch validation restores text-pattern openings with different or blank E titles and removes obsolete course warnings', () => {
     for (const name of ['최종이수자명단', '2기_최종이수자명단', '2기+11기_통합이수자명단']) {
       const e = environment(), s = e.add(name);
       const records = [
@@ -855,42 +854,47 @@ module.exports = function ({source, test, assert, normalize}) {
         ['', "AI와 언어' 수업에 참여함."]];
       s.getRange(2, 5, records.length, 1).setValues(records.map(row => [row[0]]));
       s.getRange(2, 7, records.length, 1).setValues(records.map(row => [row[1]]));
-      s.getRange('I2').setValue('이전 사유: 문두 강좌명 따옴표 확인(확인필요)');
+      s.getRange('G2').setRichTextValue(new Rich(records[0][1], Array.from({length: records[0][1].length}, () => ({bold: true, color: '#ff0000'}))));
+      s.getRange('I2').setValue('AI와: 문두 강좌명 불일치(확인필요)');
+      s.getRange('I4').setValue('AI와 언어: 문두 강좌명 따옴표 확인(확인필요)');
       const backup = e.add('보관_' + name); backup.getRange('E2').setValue('AI와 언어'); backup.getRange('G2').setValue(records[0][1]);
       e.context.revalidateAllSetc();
       assert.equal(s.getRange('G2').getValue(), "'" + records[0][1]);
       assert.equal(s.getRange('G3').getValue(), "'" + records[1][1]);
-      for (let index = 2; index < records.length; index++) assert.equal(s.getRange(index + 2, 7).getValue(), records[index][1]);
+      for (let index = 2; index < records.length - 1; index++) assert.equal(s.getRange(index + 2, 7).getValue(), records[index][1]);
+      assert.equal(s.getRange('G7').getValue(), "'" + records[5][1]);
       assert.equal(s.getRange('I2').getValue(), '');
-      assert.equal(s.getRange('I4').getValue(), 'AI와 언어: 문두 강좌명 따옴표 확인(확인필요)');
-      assert.equal(s.getRange('I5').getValue(), "'다른 강좌': 문두 강좌명 불일치(확인필요)");
-      assert.ok(s.getRange('G4').getRichTextValue().styles.slice(0, 6).every(style => style.color === '#ff0000'));
+      assert.ok(s.getRange('G2').getRichTextValue().styles.every(style => style.color === '#000000'));
+      assert.equal(s.getRange('I4').getValue(), '');
+      assert.equal(s.getRange('I5').getValue(), '');
+      assert.ok(s.getRange('G4').getRichTextValue().styles.every(style => style.color === '#000000'));
       assert.equal(backup.getRange('G2').getValue(), records[0][1]);
       assert.ok(!e.alerts.at(-1).includes('처리 실패'));
     }
   });
 
-  test('Editing the course also refreshes the current row while teacher-only edits leave the record untouched', () => {
+  test('G edits restore the opening independently of E while E/F-only edits leave entered content untouched', () => {
     const e = environment(), s = e.add('최종이수자명단');
     s.getRange('E2').setValue('다른 강좌'); s.getRange('G2').setValue("AI와 언어' 수업에 참여함.");
     e.edit(s.getRange('G2'));
-    assert.equal(s.getRange('I2').getValue(), 'AI와: 문두 강좌명 불일치(확인필요)');
-    s.getRange('E2').setValue('AI와 언어'); e.edit(s.getRange('E2'));
+    assert.equal(s.getRange('I2').getValue(), '');
     assert.equal(s.getRange('G2').getValue(), "'AI와 언어' 수업에 참여함.");
     assert.equal(s.getRange('I2').getValue(), '');
     s.getRange('G2').setValue("AI와 언어' 수업에 참여함.");
+    s.getRange('E2').setValue('AI와 언어'); e.edit(s.getRange('E2'));
+    assert.equal(s.getRange('G2').getValue(), "AI와 언어' 수업에 참여함.");
     e.edit(s.getRange('F2'));
     assert.equal(s.getRange('G2').getValue(), "AI와 언어' 수업에 참여함.");
   });
 
-  test('Restoration does not overwrite text when the course or content changes while validation is running', () => {
+  test('Changing E during validation cannot block restoration while a newer G edit remains protected', () => {
     for (const changedColumn of [5, 7]) {
       const e = environment(), s = e.add('최종이수자명단');
       s.getRange('E2').setValue('AI와 언어'); s.getRange('G2').setValue("AI와 언어' 수업에 참여함.");
       e.onRichRead = () => s.getRange(2, changedColumn).setValue(changedColumn === 5 ? '새 강좌' : '새 입력을 보존함.');
       e.edit(s.getRange('G2'));
-      assert.equal(s.getRange('G2').getValue(), changedColumn === 5 ? "AI와 언어' 수업에 참여함." : '새 입력을 보존함.');
-      assert.equal(s.getRange('I2').getValue(), '재검증 필요');
+      assert.equal(s.getRange('G2').getValue(), changedColumn === 5 ? "'AI와 언어' 수업에 참여함." : '새 입력을 보존함.');
+      assert.equal(s.getRange('I2').getValue(), changedColumn === 5 ? '' : '재검증 필요');
     }
   });
 
