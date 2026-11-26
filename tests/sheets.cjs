@@ -1,6 +1,14 @@
 const vm = require('node:vm');
 
 module.exports = function ({source, test, assert, normalize}) {
+  function textStyle(style) {
+    const result = {...style};
+    for (const [method, key] of Object.entries({getForegroundColor: 'color', getFontFamily: 'font', getFontSize: 'size',
+      isBold: 'bold', isItalic: 'italic', isUnderline: 'underline', isStrikethrough: 'strikethrough'})) {
+      Object.defineProperty(result, method, {value: () => style[key] === undefined ? null : style[key]});
+    }
+    return result;
+  }
   class StyleBuilder {
     constructor() { this.style = {}; }
     setForegroundColor(color) { this.style.color = color; return this; }
@@ -15,7 +23,7 @@ module.exports = function ({source, test, assert, normalize}) {
     getText() { return this.text; }
     getStartIndex() { return this.start; }
     getEndIndex() { return this.start + this.text.length; }
-    getTextStyle() { return {...this.styles[0]}; }
+    getTextStyle() { return textStyle(this.styles[0]); }
     getLinkUrl(start = 0, end = this.text.length) {
       const links = [...new Set(this.links.slice(start, end))];
       return links.length === 1 ? links[0] : null;
@@ -44,7 +52,8 @@ module.exports = function ({source, test, assert, normalize}) {
     build() { return new Rich(this.text, this.styles.map(s => ({...s})), this.links.slice()); }
   }
   function environment() {
-    const env = {alerts: [], toasts: [], menus: [], props: new Map(), sheets: [], nextId: 1, clock: 0, clockStep: 0};
+    const env = {alerts: [], toasts: [], menus: [], props: new Map(), sheets: [], nextId: 1, clock: 0, clockStep: 0,
+      richWrites: [], quoteStyleShift: false};
     class Range {
       constructor(sheet, row, col, rows = 1, cols = 1) {
         if (rows < 1 || cols < 1 || row < 1 || col < 1 || row + rows - 1 > sheet.maxRows || col + cols - 1 > sheet.maxCols) throw new Error('Invalid range');
@@ -114,7 +123,16 @@ module.exports = function ({source, test, assert, normalize}) {
         if (env.onRichRead) { const fn = env.onRichRead; env.onRichRead = null; fn(); }
         return result;
       }
-      setRichTextValue(rich) { this.cells().flat().forEach(c => { c.value = rich.text; c.formula = ''; c.rich = rich; }); return this; }
+      setRichTextValue(rich) {
+        env.richWrites.push({sheet: this.sheet.name, row: this.row, col: this.col, text: rich.text});
+        // SpreadsheetApp의 선행 작은따옴표 소비를 반영합니다. 비교할 본문은 저장 후 값입니다.
+        const escaped = rich.text.startsWith("'"), text = escaped ? rich.text.slice(1) : rich.text;
+        const shift = escaped && env.quoteStyleShift ? 1 : 0;
+        const stored = new Rich(text, rich.styles.slice(shift, shift + text.length), rich.links.slice(shift, shift + text.length));
+        this.cells().flat().forEach(c => { c.value = text; c.formula = ''; c.rich = stored; });
+        if (env.onRichWrite) { const fn = env.onRichWrite; env.onRichWrite = null; fn(); }
+        return this;
+      }
       clearContent() { return this.setValue(''); }
       setFontColor(color) { this.cells().flat().forEach(c => { c.color = color; }); return this; }
       setFontWeight() { return this; }
@@ -911,6 +929,99 @@ module.exports = function ({source, test, assert, normalize}) {
     assert.equal(unregistered.getRange('G2').getValue(), "AI와 언어' 수업에 참여함.");
     assert.equal(unregistered.getRange('I2').getValue(), '교사 보관 자료');
     assert.match(e.toasts.at(-1)[0], /자동 검사 결과로 확인할 수 없는 자료/);
+  });
+
+  test('A completed G edit immediately transmits two quotes, stores one and refreshes bytes/reasons without a revalidation menu', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    const logical = "'AI와 언어' 수업에 참여하여 유튜브 영상을 분석함";
+    // UI 입력의 첫 작은따옴표가 이미 제외된 저장값을 재현합니다.
+    s.getRange('G2').setValue(logical.slice(1));
+    s.getRange('E2').setValue('정식 명칭과 달라도 적용함');
+    s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    e.context.revalidateAllSetc = () => { throw new Error('A new edit must not require the batch menu'); };
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), logical);
+    assert.equal(s.getRange('G2').getRichTextValue().getText(), logical);
+    assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(logical, 'utf8'));
+    assert.equal(s.getRange('I2').getValue(), '유튜브: 사기업 명칭 (영상/스트리밍)\n분석함: 문장 끝 온점 누락(확인필요)');
+    const writes = e.richWrites.filter(w => w.col === 7);
+    assert.ok(writes.length >= 1);
+    assert.ok(writes.every(w => w.text === "'" + logical));
+    assert.equal(e.alerts.length, 0);
+    assert.equal(e.toasts.length, 0);
+    assert.equal(e.props.has(e.context.SETC_CURSOR_KEY_), false);
+  });
+
+  test('Already stored leading quotes survive repeated edits and batch checks without accumulating storage prefixes', () => {
+    const e = environment(), s = e.add('2기_최종이수자명단');
+    const logical = "'AI와 언어' 수업에 참여함.";
+    s.getRange('G2').setValue(logical); s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+    for (let n = 0; n < 3; n++) {
+      e.edit(s.getRange('G2'));
+      assert.equal(s.getRange('G2').getValue(), logical);
+      assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(logical, 'utf8'));
+      assert.equal(s.getRange('I2').getValue(), '');
+    }
+    e.context.revalidateAllSetc();
+    assert.equal(s.getRange('G2').getValue(), logical);
+    assert.ok(e.richWrites.filter(w => w.col === 7).every(w => w.text === "'" + logical));
+    // 복사 원문에 실제 U+0027 한 개가 있으므로 일반 텍스트로도 기호가 존재합니다.
+    const copiedPlainText = s.getRange('G2').getValue();
+    assert.equal(copiedPlainText.charCodeAt(0), 39);
+    assert.notEqual(copiedPlainText.charCodeAt(1), 39);
+    const target = e.add('3기_최종이수자명단');
+    target.getRange('G2').setValue(copiedPlainText.slice(1)); // 다른 시트가 붙여넣기의 첫 기호를 다시 소비한 경우
+    e.edit(target.getRange('G2'));
+    assert.equal(target.getRange('G2').getValue(), logical);
+    assert.equal(target.getRange('I2').getValue(), '');
+  });
+
+  test('Escaped storage preserves exact red spans, fonts and distinct links for either service offset interpretation', () => {
+    for (const shifted of [false, true]) {
+      const e = environment(), s = e.add('최종이수자명단'); e.quoteStyleShift = shifted;
+      const input = "AI와 언어'  수업에 참여함.\n유튜브를 분석함", logical = "'AI와 언어' 수업에 참여함.\n유튜브를 분석함";
+      const styles = Array.from({length: input.length}, (_, i) => ({bold: i < 6, italic: i >= input.indexOf('유튜브'), font: '교사 글꼴'}));
+      const links = Array.from({length: input.length}, (_, i) => i < 6 ? 'https://example.com/course' : i >= input.indexOf('유튜브') && i < input.indexOf('유튜브') + 3 ? 'https://example.com/evidence' : null);
+      s.getRange('G2').setRichTextValue(new Rich(input, styles, links));
+      s.getRange('H2').setValue('=GET_NEIS_BYTE(G2)');
+      e.edit(s.getRange('G2'));
+      assert.equal(s.getRange('G2').getValue(), logical);
+      assert.equal(s.getRange('H2').getValue(), Buffer.byteLength(logical, 'utf8'));
+      const rich = s.getRange('G2').getRichTextValue(), evidence = logical.indexOf('유튜브');
+      assert.equal(rich.links[0], null);
+      assert.ok(rich.links.slice(1, 7).every(url => url === 'https://example.com/course'));
+      assert.ok(rich.links.slice(evidence, evidence + 3).every(url => url === 'https://example.com/evidence'));
+      assert.equal(rich.styles[0].bold, true);
+      assert.equal(rich.styles[evidence].italic, true);
+      assert.equal(rich.styles[evidence].font, '교사 글꼴');
+      for (let i = 0; i < logical.length; i++) {
+        const red = i >= evidence && i < evidence + 3 || i >= logical.indexOf('분석함');
+        assert.equal(rich.styles[i].color, red ? '#ff0000' : '#000000');
+      }
+      assert.equal(e.context.SETC_QUOTE_STYLE_SHIFT_, shifted ? 1 : 0);
+      assert.notEqual(s.getRange('I2').getValue(), '재검증 필요');
+    }
+  });
+
+  test('An explanation beginning with an actual quote also survives the I-column storage parser', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    const logical = "'예시 강좌' 수업에 참여함.";
+    e.context.checkSetcLocalRules = () => [{ruleId: 'TEST', reason: '어미 오류', reviewLevel: 'REVIEW', spans: [{start: 0, end: 7, label: "'예시 강좌'"}]}];
+    s.getRange('G2').setValue(logical);
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), logical);
+    assert.equal(s.getRange('I2').getValue(), "'예시 강좌': 어미 오류");
+    assert.ok(e.richWrites.filter(w => w.col === 9).every(w => w.text === "''예시 강좌': 어미 오류"));
+  });
+
+  test('A newer edit arriving after the escaped write is preserved and prevents a stale formatting retry', () => {
+    const e = environment(), s = e.add('최종이수자명단');
+    s.getRange('G2').setValue("AI와 언어' 수업에 참여함.");
+    e.onRichWrite = () => s.getRange('G2').setValue('새로 입력한 세특을 보존함.');
+    e.edit(s.getRange('G2'));
+    assert.equal(s.getRange('G2').getValue(), '새로 입력한 세특을 보존함.');
+    assert.equal(s.getRange('I2').getValue(), '재검증 필요');
+    assert.equal(e.richWrites.filter(w => w.col === 7).length, 1);
   });
 
   test('Formula-looking reason is written as literal rich text; stale edit is not overwritten', () => {

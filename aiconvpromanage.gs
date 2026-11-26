@@ -1,5 +1,5 @@
-// 전체 코드 확인본: 2026-11-26.3 (강좌명 대조 제거·문두 따옴표 패턴 복원·정렬 보존 포함)
-var SETC_BUILD_ID_ = '2026-11-26.3';
+// 전체 코드 확인본: 2026-11-26.4 (작은따옴표 저장 이스케이프·입력 즉시 복원·정렬 보존 포함)
+var SETC_BUILD_ID_ = '2026-11-26.4';
 
 /**
  * =========================================================
@@ -1612,12 +1612,70 @@ function validateSetcRow_(sheet, row) {
   issues.forEach(issue => issue.spans.forEach(span => builder.setTextStyle(span.start, span.end, red)));
   // 잠금은 다른 스크립트 작업끼리 적용되므로 사용자 입력은 쓰기 직전에 다시 확인합니다.
   if (cell.getValue() !== value || cell.getFormula()) { output.setValue('재검증 필요'); return; }
-  cell.setRichTextValue(builder.build());
+  if (!writeSetcRichText_(cell, builder.build(), value)) { output.setValue('재검증 필요'); return; }
   if (cell.getValue() !== text || cell.getFormula()) { output.setValue('재검증 필요'); return; }
   // '='로 시작하는 검출 표현도 수식이 아닌 텍스트로 기록합니다.
   const explanation = formatSetcIssues_(issues);
-  if (explanation) output.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(explanation).build());
+  if (explanation) {
+    if (!writeSetcRichText_(output, SpreadsheetApp.newRichTextValue().setText(explanation).build(), output.getValue())) output.setValue('재검증 필요');
+  }
   else output.clearContent();
+}
+
+var SETC_QUOTE_STYLE_SHIFT_ = 1;
+
+function getSetcStorageText_(text) {
+  return text.startsWith("'") ? "'" + text : text;
+}
+
+/** 작은따옴표 한 개는 저장용 접두부입니다. 검사 본문과 바이트 수에는 추가하지 않습니다. */
+function buildSetcStoredRichText_(rich, styleShift) {
+  const text = rich.getText();
+  if (!text.startsWith("'")) return rich;
+  const encoded = {text: getSetcStorageText_(text), segments: [{sourceStart: 0, sourceEnd: text.length, targetStart: styleShift}]};
+  return buildNormalizedSetcRichText_(rich, encoded).build();
+}
+
+/** 실제 저장값과 서식을 확인합니다. 재시도 전에도 사용자 입력이 바뀌지 않았는지 확인합니다. */
+function writeSetcRichText_(cell, rich, expectedValue) {
+  const text = rich.getText(), quoted = text.startsWith("'");
+  const shifts = quoted ? [SETC_QUOTE_STYLE_SHIFT_, 1 - SETC_QUOTE_STYLE_SHIFT_] : [0];
+  for (const shift of shifts) {
+    if (cell.getFormula() || cell.getValue() !== expectedValue) return false;
+    cell.setRichTextValue(buildSetcStoredRichText_(rich, shift));
+    if (cell.getFormula() || cell.getValue() !== text) return false;
+    if (!quoted) return true;
+    const stored = cell.getRichTextValue();
+    if (cell.getFormula() || cell.getValue() !== text) return false;
+    if (sameSetcRichText_(rich, stored)) { SETC_QUOTE_STYLE_SHIFT_ = shift; return true; }
+    expectedValue = text;
+  }
+  return false;
+}
+
+/** 접두부 소비 전후의 서식 위치 차이도 읽은 결과로 확인해 빨간 표시·원래 서식·링크를 보존합니다. */
+function sameSetcRichText_(expected, actual) {
+  if (!actual || actual.getText() !== expected.getText()) return false;
+  const text = expected.getText(), left = expected.getRuns(), right = actual.getRuns();
+  const getters = ['getForegroundColor', 'getFontFamily', 'getFontSize', 'isBold', 'isItalic', 'isUnderline', 'isStrikethrough'];
+  let start = 0, i = 0, j = 0;
+  while (start < text.length) {
+    while (i < left.length && left[i].getEndIndex() <= start) i++;
+    while (j < right.length && right[j].getEndIndex() <= start) j++;
+    if (!left[i] || !right[j]) return false;
+    const expectedStyle = left[i].getTextStyle(), actualStyle = right[j].getTextStyle();
+    for (const getter of getters) {
+      const value = expectedStyle[getter]();
+      if (value !== null && value !== actualStyle[getter]()) return false;
+    }
+    start = Math.min(left[i].getEndIndex(), right[j].getEndIndex());
+  }
+  let offset = 0;
+  for (const ch of text) {
+    if (expected.getLinkUrl(offset, offset + ch.length) !== actual.getLinkUrl(offset, offset + ch.length)) return false;
+    offset += ch.length;
+  }
+  return true;
 }
 
 /** 일반 스페이스(U+0020)만 한 칸으로 정리하고, 남는 글자의 원래 위치를 반환합니다. */

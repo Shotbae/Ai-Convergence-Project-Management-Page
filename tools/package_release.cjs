@@ -9,7 +9,7 @@ vm.runInContext(source.toString('utf8'), context);
 if (typeof context.checkSetcRuntime_ !== 'function' || !context.checkSetcRuntime_().ok) {
   throw new Error('Runtime punctuation checks failed; release was not created.');
 }
-for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets', 'normalizeSetcText_']) {
+for (const name of ['ensureCompletionFilter_', 'normalizeSetcSpaces_', 'getAttendanceDayCount_', 'normalizeCompletionTerms_', 'isSetcGeneratedResult_', 'getCompletionByteFormula_', 'prepareCompletionSheets', 'normalizeSetcText_', 'getSetcStorageText_', 'writeSetcRichText_']) {
   if (typeof context[name] !== 'function') throw new Error('Missing feature: ' + name);
 }
 const restored = context.normalizeSetcText_("AI와 언어' 수업에 참여함.").text;
@@ -18,6 +18,9 @@ if (restored !== "'AI와 언어' 수업에 참여함." || context.normalizeSetcT
   throw new Error('Course opening-quote restoration failed; release was not created.');
 }
 const version = context.SETC_BUILD_ID_;
+if (context.getSetcStorageText_(restored) !== "''AI와 언어' 수업에 참여함.") {
+  throw new Error('Storage quote escaping failed; release was not created.');
+}
 const file = 'AI융합_전체코드_' + version + '.txt';
 const directory = path.join(root, 'releases');
 const target = path.join(directory, file);

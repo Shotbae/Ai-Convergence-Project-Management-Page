@@ -1,4 +1,17 @@
 module.exports = function ({context, test, assert}) {
+  test('The storage-only quote prefix produces two transmitted quotes for one logical quote and leaves byte/check inputs untouched', () => {
+    for (const [logical, wire] of [
+      ["'AI와 언어' 수업에 참여함.", "''AI와 언어' 수업에 참여함."],
+      ["''원래 두 개' 수업에 참여함.", "'''원래 두 개' 수업에 참여함."],
+      ['일반 본문', '일반 본문'], ['', ''], ["'", "''"]]) {
+      assert.equal(context.getSetcStorageText_(logical), wire);
+    }
+    const logical = context.normalizeSetcText_("AI와 언어' 수업에 참여함.").text;
+    const bytes = context.GET_NEIS_BYTE(logical);
+    context.getSetcStorageText_(logical);
+    assert.equal(context.GET_NEIS_BYTE(logical), bytes);
+    assert.equal(context.GET_NEIS_BYTE(context.getSetcStorageText_(logical)), bytes + 1);
+  });
   test('Opening quote restoration follows the course-introduction text shape for arbitrary titles without E-column metadata', () => {
     const cases = [
       ["AI와 언어' 수업에 참여함.", "'AI와 언어' 수업에 참여함."],
